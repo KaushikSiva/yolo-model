@@ -25,8 +25,20 @@ def _load_pipeline(base_model: str):
     return Chronos2Pipeline.from_pretrained(base_model, device_map="cuda")
 
 
-def _forecast_for_history(pipeline, history: pd.DataFrame, prediction_length: int) -> pd.DataFrame:
+def _chronos_context_df(history: pd.DataFrame) -> pd.DataFrame:
     context_df = history.rename(columns={"ticker": "id", "date": "timestamp", "close": "target"})[["id", "timestamp", "target"]]
+    context_df = context_df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    if context_df.empty:
+        return context_df
+
+    # Chronos expects a regular frequency, but equity histories skip market holidays.
+    synthetic_timestamps = pd.date_range(end=pd.Timestamp(context_df.iloc[-1]["timestamp"]), periods=len(context_df), freq="B")
+    context_df["timestamp"] = synthetic_timestamps
+    return context_df
+
+
+def _forecast_for_history(pipeline, history: pd.DataFrame, prediction_length: int) -> pd.DataFrame:
+    context_df = _chronos_context_df(history)
     return pipeline.predict_df(
         context_df,
         prediction_length=prediction_length,
