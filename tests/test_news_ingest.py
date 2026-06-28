@@ -77,7 +77,37 @@ def test_brightdata_request_api_article_fetch_uses_zone_and_extracts_html(monkey
 
     assert body == "This is a long enough article paragraph to be extracted correctly by the parser."
     assert captured[0][0] == "https://api.brightdata.com/request"
-    assert captured[0][1] == {"zone": "web_unlocker1", "url": "https://example.com/article"}
+    assert captured[0][1] == {"zone": "web_unlocker1", "url": "https://example.com/article", "format": "raw"}
+
+
+def test_brightdata_search_uses_title_when_article_fetch_fails(monkeypatch) -> None:
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_ENDPOINT", "https://api.brightdata.com/request")
+    monkeypatch.setenv("BRIGHTDATA_ZONE", "serp_api1")
+
+    def fake_fetch(url: str, payload: dict, timeout: int = 30) -> dict:
+        return {
+            "news": [
+                {
+                    "title": "NVIDIA extends AI rally after earnings beat",
+                    "url": "https://example.com/story",
+                    "source": "Reuters",
+                    "date": "2 hours ago",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(news_ingest, "_fetch_api_response", fake_fetch)
+    monkeypatch.setattr(news_ingest, "_brightdata_article_body", lambda url: (_ for _ in ()).throw(RuntimeError("bad article request")))
+
+    rows = news_ingest._brightdata_search_news(
+        ticker="NVDA",
+        max_items=3,
+        min_published_at=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["body"] == "NVIDIA extends AI rally after earnings beat"
 
 
 def test_ingest_news_persists_successful_tickers_before_later_failures(tmp_path, monkeypatch) -> None:

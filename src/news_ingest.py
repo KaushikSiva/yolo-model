@@ -322,7 +322,7 @@ def _brightdata_article_body(url: str) -> str:
         zone = _brightdata_article_zone()
         if not zone:
             raise RuntimeError("BRIGHTDATA_ARTICLE_ZONE or BRIGHTDATA_ZONE is required for Bright Data /request article fetches.")
-        payload = {"zone": zone, "url": url}
+        payload = {"zone": zone, "url": url, "format": "raw"}
     else:
         payload = {"url": url, "format": "article_text"}
     response = _fetch_api_response(endpoint, payload)
@@ -368,7 +368,11 @@ def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datet
         )
         if not title or not link or not published_at:
             continue
-        body = _brightdata_article_body(link)
+        try:
+            body = _brightdata_article_body(link)
+        except Exception as exc:
+            logging.warning("Bright Data article fetch failed for %s: %s", link, exc)
+            body = title
         normalized.append(
             {
                 "ticker": ticker,
