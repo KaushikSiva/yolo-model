@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -7,8 +8,8 @@ from typing import Any
 import pandas as pd
 
 from src.config import ADJUSTER_PRODUCTION_DIR
-from src.news_ingest import load_news_jsonl_files
-from src.structured_llm import generate_structured_json
+from src.news_ingest import brightdata_news_available, fetch_live_news_for_ticker, load_news_jsonl_files
+from src.structured_llm import generate_structured_json, structured_llm_backend_label, structured_llm_model_name, uses_remote_structured_llm
 from src.utils import clamp, load_json
 
 
@@ -31,6 +32,8 @@ def _adjuster_disabled() -> bool:
 
 def load_adjuster_metadata() -> dict[str, Any]:
     metadata_path = ADJUSTER_PRODUCTION_DIR / "metadata.json"
+    if uses_remote_structured_llm() and not metadata_path.exists():
+        return {"artifact_path": None, "model_version": structured_llm_model_name()}
     if not metadata_path.exists():
         raise FileNotFoundError(
             f"Missing adjuster metadata: {metadata_path}. Train or export the Gemma adjuster first."
@@ -39,6 +42,25 @@ def load_adjuster_metadata() -> dict[str, Any]:
 
 
 def _load_recent_news_rows(ticker: str, as_of_date: str, lookback_days: int = LOOKBACK_DAYS, limit: int = MAX_NEWS_ITEMS) -> list[dict]:
+    if brightdata_news_available():
+        try:
+            rows = fetch_live_news_for_ticker(ticker, days_back=lookback_days, max_items=limit, mode="brightdata_api")
+            live_rows: list[dict] = []
+            for row in rows:
+                live_rows.append(
+                    {
+                        "published_at": str(row.get("published_at", "")).strip(),
+                        "title": str(row.get("title", "")).strip(),
+                        "source": str(row.get("source", "")).strip(),
+                        "body_excerpt": str(row.get("body", "")).strip()[:400],
+                        "url": str(row.get("url", "")).strip(),
+                    }
+                )
+            live_rows.sort(key=lambda item: item["published_at"], reverse=True)
+            return live_rows[:limit]
+        except Exception as exc:
+            logging.warning("Bright Data live news fetch failed for %s: %s. Falling back to local cached news.", ticker, exc)
+
     as_of = pd.Timestamp(as_of_date).normalize()
     earliest = as_of - pd.Timedelta(days=lookback_days)
     rows: list[dict] = []
@@ -71,7 +93,7 @@ def _default_adjustment(
 ) -> dict[str, Any]:
     return {
         "adjuster_model_version": model_version,
-        "adjuster_backend": "gemma_local",
+        "adjuster_backend": structured_llm_backend_label() if model_version != "disabled" else "disabled",
         "ticker": ticker,
         "target_horizon": horizon,
         "baseline_predicted_return": round(baseline_predicted_return, 6),
@@ -102,7 +124,7 @@ def _coerce_adjustment(
     adjustment_bps = int(round(clamp(raw_bps, -MAX_ADJUSTMENT_BPS, MAX_ADJUSTMENT_BPS)))
     return {
         "adjuster_model_version": model_version,
-        "adjuster_backend": "gemma_local",
+        "adjuster_backend": structured_llm_backend_label(),
         "ticker": ticker,
         "target_horizon": horizon,
         "baseline_predicted_return": round(baseline_predicted_return, 6),
@@ -166,8 +188,8 @@ def adjust_prediction(
         )
 
     metadata = load_adjuster_metadata()
-    model_dir = Path(metadata.get("artifact_path", ADJUSTER_PRODUCTION_DIR))
-    if not model_dir.exists():
+    model_dir = None if uses_remote_structured_llm() else Path(metadata.get("artifact_path", ADJUSTER_PRODUCTION_DIR))
+    if model_dir is not None and not model_dir.exists():
         raise FileNotFoundError(f"Adjuster artifact directory does not exist: {model_dir}")
 
     recent_news = _load_recent_news_rows(ticker, as_of_date)

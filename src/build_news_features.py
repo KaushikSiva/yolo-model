@@ -15,7 +15,7 @@ import pandas as pd
 
 from src.config import FEATURES_PATH, FINGPT_EVENT_FEATURES_PATH, NEWS_FEATURES_PATH, N1_PRODUCTION_DIR, ensure_project_dirs
 from src.news_ingest import load_news_jsonl_files
-from src.structured_llm import generate_structured_json
+from src.structured_llm import generate_structured_json, structured_llm_backend_label, structured_llm_model_name, uses_remote_structured_llm
 from src.utils import load_json, save_json, setup_logging
 
 
@@ -162,7 +162,7 @@ def _infer_heuristic_event_rows(news_rows: list[dict]) -> pd.DataFrame:
 
 
 def _infer_fingpt_event_rows(
-    model_dir: Path,
+    model_dir: Path | None,
     features: pd.DataFrame,
     news_rows: list[dict],
     allow_fallback: bool,
@@ -215,7 +215,7 @@ def build_news_features(mode: str = "heuristic") -> pd.DataFrame:
     if mode == "heuristic":
         inferred = _infer_heuristic_event_rows(news_rows)
     else:
-        model_dir = _load_fingpt_model_dir()
+        model_dir = None if uses_remote_structured_llm() else _load_fingpt_model_dir()
         inferred = _infer_fingpt_event_rows(
             model_dir,
             features,
@@ -256,8 +256,9 @@ def build_news_features(mode: str = "heuristic") -> pd.DataFrame:
     metadata = load_json(N1_PRODUCTION_DIR / "metadata.json", default={})
     n1_metadata = {
         "model_name": "YOLO-WALLSTREET-n1",
-        "model_version": metadata.get("model_version"),
+        "model_version": metadata.get("model_version") or structured_llm_model_name(),
         "artifact_path": metadata.get("artifact_path"),
+        "feature_builder_backend": structured_llm_backend_label(),
         "feature_builder_mode": mode,
         "gpu_training_required": mode != "heuristic",
         "mac_inference_supported": False,

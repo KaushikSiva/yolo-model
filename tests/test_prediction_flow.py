@@ -159,6 +159,8 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
     assert required_keys.issubset(prediction.keys())
     assert prediction["predicted_return"] == 0.023
     assert "adjuster" in prediction["model_versions"]
+    assert prediction["reasoning"] == "fresh positive news"
+    assert prediction["latest_news"] == []
 
     prediction_id = log_prediction(prediction, features_snapshot={"stub": True}, db_path=str(db_path))
     engine = get_engine(str(db_path))

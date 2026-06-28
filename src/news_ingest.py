@@ -100,6 +100,16 @@ def _brightdata_article_zone() -> str | None:
     )
 
 
+def brightdata_news_available() -> bool:
+    endpoint = _brightdata_search_endpoint()
+    token = _brightdata_api_token()
+    if not endpoint or not token:
+        return False
+    if _is_brightdata_request_endpoint(endpoint):
+        return bool(_brightdata_serp_zone())
+    return True
+
+
 def _build_opener(use_proxy: bool):
     handlers = []
     proxy_url = _proxy_url() if use_proxy else None
@@ -354,6 +364,41 @@ def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datet
         if len(normalized) >= max_items:
             break
     return normalized
+
+
+def fetch_live_news_for_ticker(
+    ticker: str,
+    days_back: int = 7,
+    max_items: int = 8,
+    mode: str = "brightdata_api",
+) -> list[dict]:
+    min_published_at = datetime.now(timezone.utc) - timedelta(days=days_back)
+    normalized_ticker = str(ticker).upper()
+    if mode == "brightdata_api":
+        return _brightdata_search_news(normalized_ticker, max_items, min_published_at)
+    if mode == "direct":
+        query = quote_plus(_ticker_query(normalized_ticker))
+        rss_url = GOOGLE_NEWS_RSS_TEMPLATE.format(query=query)
+        xml_text = _fetch_text(rss_url, use_proxy=False)
+        return _parse_google_news_rss(
+            xml_text,
+            normalized_ticker,
+            max_items,
+            min_published_at,
+            use_proxy=False,
+        )
+    if mode == "brightdata_proxy":
+        query = quote_plus(_ticker_query(normalized_ticker))
+        rss_url = GOOGLE_NEWS_RSS_TEMPLATE.format(query=query)
+        xml_text = _fetch_text(rss_url, use_proxy=True)
+        return _parse_google_news_rss(
+            xml_text,
+            normalized_ticker,
+            max_items,
+            min_published_at,
+            use_proxy=True,
+        )
+    raise ValueError(f"Unsupported live news mode: {mode}. Expected one of {sorted(SUPPORTED_INGEST_MODES)}")
 
 
 def _dedupe_key(row: dict) -> str:

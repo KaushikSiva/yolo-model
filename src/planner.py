@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from src.config import PLANNER_PRODUCTION_DIR
-from src.structured_llm import generate_structured_json
+from src.structured_llm import generate_structured_json, structured_llm_backend_label, structured_llm_model_name, uses_remote_structured_llm
 from src.utils import load_json
 
 
@@ -23,6 +23,8 @@ REQUIRED_PLAN_KEYS = {
 
 def load_planner_metadata() -> dict[str, Any]:
     metadata_path = PLANNER_PRODUCTION_DIR / "metadata.json"
+    if uses_remote_structured_llm() and not metadata_path.exists():
+        return {"artifact_path": None, "model_version": structured_llm_model_name()}
     if not metadata_path.exists():
         raise FileNotFoundError(
             f"Missing planner metadata: {metadata_path}. Train or export the Gemma planner first."
@@ -36,7 +38,7 @@ def _coerce_plan(payload: dict[str, Any], ticker: str, horizon: str, current_clo
         raise ValueError(f"Planner output is missing required keys: {sorted(missing)}")
     return {
         "planner_model_version": model_version,
-        "planner_backend": "gemma_local",
+        "planner_backend": structured_llm_backend_label(),
         "should_retrieve": bool(payload["should_retrieve"]),
         "urgency": str(payload["urgency"]),
         "urgency_score": float(payload["urgency_score"]),
@@ -82,8 +84,8 @@ def plan_retrieval(
     current_close: float,
 ) -> dict[str, Any]:
     metadata = load_planner_metadata()
-    model_dir = Path(metadata.get("artifact_path", PLANNER_PRODUCTION_DIR))
-    if not model_dir.exists():
+    model_dir = None if uses_remote_structured_llm() else Path(metadata.get("artifact_path", PLANNER_PRODUCTION_DIR))
+    if model_dir is not None and not model_dir.exists():
         raise FileNotFoundError(f"Planner artifact directory does not exist: {model_dir}")
 
     prompt = _build_prompt(ticker, feature_row, news_features, t1_payload, horizon)

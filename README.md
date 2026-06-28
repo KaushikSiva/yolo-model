@@ -278,6 +278,32 @@ Notes:
 - the adapter in `models/production/n1` is preserved unchanged
 - the merged export is written under `exports/`, not back into `models/production/n1`
 
+## Hosted LLM Backend
+
+Structured JSON generation can use a hosted OpenAI-compatible endpoint instead of local FinGPT or Gemma inference.
+
+Set these on the inference box:
+
+```bash
+export YOLO_WALLSTREET_LLM_BACKEND=remote
+export YOLO_WALLSTREET_LLM_ENDPOINT="https://your-endpoint/v1/chat/completions"
+export YOLO_WALLSTREET_LLM_API_KEY="your_api_key"
+export YOLO_WALLSTREET_LLM_MODEL="your_model_name"
+```
+
+This backend is used by:
+
+- `src/build_news_features.py --mode fingpt`
+- `src/build_news_features.py --mode hybrid`
+- `src/adjuster.py`
+- `src/planner.py`
+
+Notes:
+
+- the DigitalOcean console URL is not the API endpoint; use the actual inference endpoint from Model Studio
+- `--mode heuristic` in `build_news_features.py` does not call any LLM
+- you still need the local ensemble artifact for `/predict`, because XGBoost remains local
+
 ## Real News Ingestion
 
 Populate [data/raw/news](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/raw/news) with:

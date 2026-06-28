@@ -154,6 +154,8 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         },
         "main_drivers": summarize_feature_drivers(driver_row, feature_columns, importances=importances, limit=5),
         "risk_flags": risk_flags,
+        "reasoning": adjuster["rationale"],
+        "latest_news": adjuster["recent_news"],
         "adjuster": adjuster,
         "sources_used": adjuster["sources_used"],
     }
