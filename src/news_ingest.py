@@ -282,54 +282,26 @@ def _extract_search_items(payload: dict | list | str) -> list[dict]:
     return []
 
 
-def _extract_article_text_from_payload(payload: dict | list | str) -> str:
-    candidates: list[str] = []
-    if isinstance(payload, str):
-        candidates.append(payload)
-    if isinstance(payload, dict):
-        for key in ("article_text", "body", "content", "text", "html"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append(value)
-        for key in ("data", "result"):
-            nested = payload.get(key)
-            if isinstance(nested, dict):
-                for nested_key in ("article_text", "body", "content", "text", "html"):
-                    value = nested.get(nested_key)
-                    if isinstance(value, str) and value.strip():
-                        candidates.append(value)
-    if not candidates and isinstance(payload, list):
-        for item in payload:
-            if isinstance(item, str) and item.strip():
-                candidates.append(item)
-                break
-    if not candidates:
-        return ""
-    best = candidates[0]
-    return _extract_article_body(best) if "<" in best else _strip_html(best)
+def _extract_search_body(item: dict) -> str:
+    candidates = [
+        item.get("description"),
+        item.get("snippet"),
+        item.get("summary"),
+        item.get("body"),
+        item.get("content"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            cleaned = _strip_html(candidate)
+            if cleaned:
+                return cleaned
+    title = str(item.get("title") or item.get("headline") or "").strip()
+    return title
 
 
 def _is_brightdata_request_endpoint(endpoint: str) -> bool:
     parsed = urlparse(endpoint)
     return parsed.netloc == "api.brightdata.com" and parsed.path.rstrip("/") == "/request"
-
-
-def _brightdata_article_body(url: str) -> str:
-    endpoint = _brightdata_article_endpoint()
-    if not endpoint:
-        raise RuntimeError("BRIGHTDATA_ARTICLE_ENDPOINT is required for brightdata_api mode.")
-    if _is_brightdata_request_endpoint(endpoint):
-        zone = _brightdata_article_zone()
-        if not zone:
-            raise RuntimeError("BRIGHTDATA_ARTICLE_ZONE or BRIGHTDATA_ZONE is required for Bright Data /request article fetches.")
-        payload = {"zone": zone, "url": url, "format": "raw"}
-    else:
-        payload = {"url": url, "format": "article_text"}
-    response = _fetch_api_response(endpoint, payload)
-    body = _extract_article_text_from_payload(response)
-    if not body:
-        raise RuntimeError(f"Bright Data article endpoint returned no body for {url}")
-    return body
 
 
 def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datetime) -> list[dict]:
@@ -368,11 +340,7 @@ def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datet
         )
         if not title or not link or not published_at:
             continue
-        try:
-            body = _brightdata_article_body(link)
-        except Exception as exc:
-            logging.warning("Bright Data article fetch failed for %s: %s", link, exc)
-            body = title
+        body = _extract_search_body(item)
         normalized.append(
             {
                 "ticker": ticker,

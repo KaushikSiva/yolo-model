@@ -21,12 +21,12 @@ def test_brightdata_request_api_search_payload_and_normalization(monkeypatch) ->
                     "url": "https://example.com/story",
                     "source": "Reuters",
                     "date": "2 hours ago",
+                    "description": "NVIDIA beat expectations and rallied on demand strength.",
                 }
             ]
         }
 
     monkeypatch.setattr(news_ingest, "_fetch_api_response", fake_fetch)
-    monkeypatch.setattr(news_ingest, "_brightdata_article_body", lambda url: "Article body extracted from Bright Data.")
 
     rows = news_ingest._brightdata_search_news(
         ticker="NVDA",
@@ -37,7 +37,7 @@ def test_brightdata_request_api_search_payload_and_normalization(monkeypatch) ->
     assert len(rows) == 1
     assert rows[0]["ticker"] == "NVDA"
     assert rows[0]["source"] == "Reuters"
-    assert rows[0]["body"] == "Article body extracted from Bright Data."
+    assert rows[0]["body"] == "NVIDIA beat expectations and rallied on demand strength."
     assert rows[0]["published_at"].endswith("+00:00")
     assert captured[0][0] == "https://api.brightdata.com/request"
     assert captured[0][1]["zone"] == "serp_api1"
@@ -60,54 +60,14 @@ def test_extract_search_items_handles_brightdata_request_envelope_with_json_body
     assert items[0]["url"] == "https://example.com/story"
 
 
-def test_brightdata_request_api_article_fetch_uses_zone_and_extracts_html(monkeypatch) -> None:
-    captured: list[tuple[str, dict]] = []
-
-    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
-    monkeypatch.setenv("BRIGHTDATA_ARTICLE_ENDPOINT", "https://api.brightdata.com/request")
-    monkeypatch.setenv("BRIGHTDATA_ARTICLE_ZONE", "web_unlocker1")
-
-    def fake_fetch(url: str, payload: dict, timeout: int = 30) -> str:
-        captured.append((url, payload))
-        return "<html><body><p>This is a long enough article paragraph to be extracted correctly by the parser.</p></body></html>"
-
-    monkeypatch.setattr(news_ingest, "_fetch_api_response", fake_fetch)
-
-    body = news_ingest._brightdata_article_body("https://example.com/article")
-
-    assert body == "This is a long enough article paragraph to be extracted correctly by the parser."
-    assert captured[0][0] == "https://api.brightdata.com/request"
-    assert captured[0][1] == {"zone": "web_unlocker1", "url": "https://example.com/article", "format": "raw"}
-
-
-def test_brightdata_search_uses_title_when_article_fetch_fails(monkeypatch) -> None:
-    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
-    monkeypatch.setenv("BRIGHTDATA_REQUEST_ENDPOINT", "https://api.brightdata.com/request")
-    monkeypatch.setenv("BRIGHTDATA_ZONE", "serp_api1")
-
-    def fake_fetch(url: str, payload: dict, timeout: int = 30) -> dict:
-        return {
-            "news": [
-                {
-                    "title": "NVIDIA extends AI rally after earnings beat",
-                    "url": "https://example.com/story",
-                    "source": "Reuters",
-                    "date": "2 hours ago",
-                }
-            ]
-        }
-
-    monkeypatch.setattr(news_ingest, "_fetch_api_response", fake_fetch)
-    monkeypatch.setattr(news_ingest, "_brightdata_article_body", lambda url: (_ for _ in ()).throw(RuntimeError("bad article request")))
-
-    rows = news_ingest._brightdata_search_news(
-        ticker="NVDA",
-        max_items=3,
-        min_published_at=datetime.now(timezone.utc) - timedelta(days=2),
+def test_extract_search_body_prefers_description_and_falls_back_to_title() -> None:
+    assert (
+        news_ingest._extract_search_body(
+            {"title": "NVIDIA extends AI rally", "description": "<b>Demand</b> remains strong"}
+        )
+        == "Demand remains strong"
     )
-
-    assert len(rows) == 1
-    assert rows[0]["body"] == "NVIDIA extends AI rally after earnings beat"
+    assert news_ingest._extract_search_body({"title": "NVIDIA extends AI rally"}) == "NVIDIA extends AI rally"
 
 
 def test_ingest_news_persists_successful_tickers_before_later_failures(tmp_path, monkeypatch) -> None:

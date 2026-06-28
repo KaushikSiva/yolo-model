@@ -262,11 +262,10 @@ Use Bright Data API mode with the generic request endpoint:
 export BRIGHTDATA_API_TOKEN="YOUR_API_KEY"
 export BRIGHTDATA_REQUEST_ENDPOINT="https://api.brightdata.com/request"
 export BRIGHTDATA_SERP_ZONE="serp_api1"
-export BRIGHTDATA_ARTICLE_ZONE="web_unlocker1"
 python src/news_ingest.py --days-back 7 --mode brightdata_api
 ```
 
-If the same Bright Data zone can handle both steps, you can set `BRIGHTDATA_ZONE` once instead of separate `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_ARTICLE_ZONE`.
+You can also set `BRIGHTDATA_ZONE` instead of `BRIGHTDATA_SERP_ZONE` if you prefer one variable for the search zone.
 
 ## Mac Inference
 
