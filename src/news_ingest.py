@@ -27,9 +27,14 @@ from src.utils import setup_logging
 
 
 GOOGLE_NEWS_RSS_TEMPLATE = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+GOOGLE_SEARCH_NEWS_TEMPLATE = "https://www.google.com/search?q={query}&tbm=nws&hl=en&gl=us"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; YOLO-WALLSTREET/1.0; +https://github.com)"
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
+RELATIVE_TIME_RE = re.compile(
+    r"(?P<count>\d+)\s+(?P<unit>minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks)\s+ago",
+    flags=re.IGNORECASE,
+)
 SUPPORTED_INGEST_MODES = {"direct", "brightdata_proxy", "brightdata_api"}
 
 
@@ -55,12 +60,44 @@ def _brightdata_api_token() -> str | None:
     return os.getenv("BRIGHTDATA_API_TOKEN") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_API_TOKEN")
 
 
+def _brightdata_request_endpoint() -> str | None:
+    return os.getenv("BRIGHTDATA_REQUEST_ENDPOINT") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_REQUEST_ENDPOINT")
+
+
 def _brightdata_search_endpoint() -> str | None:
-    return os.getenv("BRIGHTDATA_SERP_ENDPOINT") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_SERP_ENDPOINT")
+    return (
+        os.getenv("BRIGHTDATA_SERP_ENDPOINT")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_SERP_ENDPOINT")
+        or _brightdata_request_endpoint()
+    )
 
 
 def _brightdata_article_endpoint() -> str | None:
-    return os.getenv("BRIGHTDATA_ARTICLE_ENDPOINT") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ARTICLE_ENDPOINT")
+    return (
+        os.getenv("BRIGHTDATA_ARTICLE_ENDPOINT")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ARTICLE_ENDPOINT")
+        or _brightdata_request_endpoint()
+        or _brightdata_search_endpoint()
+    )
+
+
+def _brightdata_serp_zone() -> str | None:
+    return (
+        os.getenv("BRIGHTDATA_SERP_ZONE")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_SERP_ZONE")
+        or os.getenv("BRIGHTDATA_ZONE")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ZONE")
+    )
+
+
+def _brightdata_article_zone() -> str | None:
+    return (
+        os.getenv("BRIGHTDATA_ARTICLE_ZONE")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ARTICLE_ZONE")
+        or os.getenv("BRIGHTDATA_ZONE")
+        or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ZONE")
+        or _brightdata_serp_zone()
+    )
 
 
 def _build_opener(use_proxy: bool):
@@ -82,7 +119,7 @@ def _fetch_text(url: str, timeout: int = 25, use_proxy: bool = False) -> str:
         return response.read().decode(charset, errors="replace")
 
 
-def _fetch_json(url: str, payload: dict, timeout: int = 30) -> dict | list:
+def _fetch_api_response(url: str, payload: dict, timeout: int = 30) -> dict | list | str:
     token = _brightdata_api_token()
     if not token:
         raise RuntimeError("BRIGHTDATA_API_TOKEN is required for brightdata_api mode.")
@@ -102,7 +139,13 @@ def _fetch_json(url: str, payload: dict, timeout: int = 30) -> dict | list:
         content_type = response.headers.get("Content-Type", "")
         if "charset=" in content_type:
             charset = content_type.split("charset=")[-1].split(";")[0].strip()
-        return json.loads(response.read().decode(charset, errors="replace"))
+        text = response.read().decode(charset, errors="replace")
+        if "json" in content_type.lower():
+            return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
 
 def _strip_html(value: str) -> str:
@@ -189,7 +232,23 @@ def _coerce_published_at(value: str | None, min_published_at: datetime) -> str |
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except Exception:
-            parsed = None
+            relative_match = RELATIVE_TIME_RE.search(value)
+            if relative_match:
+                count = int(relative_match.group("count"))
+                unit = relative_match.group("unit").lower()
+                if unit.startswith("min"):
+                    delta = timedelta(minutes=count)
+                elif unit.startswith("h"):
+                    delta = timedelta(hours=count)
+                elif unit.startswith("day"):
+                    delta = timedelta(days=count)
+                else:
+                    delta = timedelta(weeks=count)
+                parsed = datetime.now(timezone.utc) - delta
+            elif value.strip().lower() == "yesterday":
+                parsed = datetime.now(timezone.utc) - timedelta(days=1)
+            else:
+                parsed = None
     if parsed is None:
         return None
     if parsed.tzinfo is None:
@@ -204,15 +263,23 @@ def _extract_search_items(payload: dict | list) -> list[dict]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
-        for key in ("results", "items", "data", "articles"):
+        for key in ("results", "items", "data", "articles", "news", "news_results", "organic", "organic_results"):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
+        for key in ("result", "parsed", "response", "body"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                nested_items = _extract_search_items(value)
+                if nested_items:
+                    return nested_items
     return []
 
 
-def _extract_article_text_from_payload(payload: dict | list) -> str:
+def _extract_article_text_from_payload(payload: dict | list | str) -> str:
     candidates: list[str] = []
+    if isinstance(payload, str):
+        candidates.append(payload)
     if isinstance(payload, dict):
         for key in ("article_text", "body", "content", "text", "html"):
             value = payload.get(key)
@@ -236,12 +303,23 @@ def _extract_article_text_from_payload(payload: dict | list) -> str:
     return _extract_article_body(best) if "<" in best else _strip_html(best)
 
 
+def _is_brightdata_request_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    return parsed.netloc == "api.brightdata.com" and parsed.path.rstrip("/") == "/request"
+
+
 def _brightdata_article_body(url: str) -> str:
     endpoint = _brightdata_article_endpoint()
     if not endpoint:
         raise RuntimeError("BRIGHTDATA_ARTICLE_ENDPOINT is required for brightdata_api mode.")
-    payload = {"url": url, "format": "article_text"}
-    response = _fetch_json(endpoint, payload)
+    if _is_brightdata_request_endpoint(endpoint):
+        zone = _brightdata_article_zone()
+        if not zone:
+            raise RuntimeError("BRIGHTDATA_ARTICLE_ZONE or BRIGHTDATA_ZONE is required for Bright Data /request article fetches.")
+        payload = {"zone": zone, "url": url}
+    else:
+        payload = {"url": url, "format": "article_text"}
+    response = _fetch_api_response(endpoint, payload)
     body = _extract_article_text_from_payload(response)
     if not body:
         raise RuntimeError(f"Bright Data article endpoint returned no body for {url}")
@@ -253,13 +331,25 @@ def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datet
     if not endpoint:
         raise RuntimeError("BRIGHTDATA_SERP_ENDPOINT is required for brightdata_api mode.")
 
-    payload = {
-        "query": _ticker_query(ticker),
-        "type": "news",
-        "limit": max_items,
-        "ticker": ticker,
-    }
-    response = _fetch_json(endpoint, payload)
+    if _is_brightdata_request_endpoint(endpoint):
+        zone = _brightdata_serp_zone()
+        if not zone:
+            raise RuntimeError("BRIGHTDATA_SERP_ZONE or BRIGHTDATA_ZONE is required for Bright Data /request news search.")
+        query = quote_plus(_ticker_query(ticker))
+        payload = {
+            "zone": zone,
+            "url": GOOGLE_SEARCH_NEWS_TEMPLATE.format(query=query),
+            "format": "json",
+            "data_format": "parsed",
+        }
+    else:
+        payload = {
+            "query": _ticker_query(ticker),
+            "type": "news",
+            "limit": max_items,
+            "ticker": ticker,
+        }
+    response = _fetch_api_response(endpoint, payload)
     items = _extract_search_items(response)
     normalized: list[dict] = []
     for item in items:
