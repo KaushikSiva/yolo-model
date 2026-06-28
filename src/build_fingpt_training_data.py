@@ -25,8 +25,16 @@ TOPIC_KEYWORDS = {
 }
 
 
+def _normalize_news_timestamp(value: str | pd.Timestamp) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp.normalize()
+
+
 def _lookup_feature_row(features: pd.DataFrame, ticker: str, published_at: pd.Timestamp) -> pd.Series | None:
-    rows = features.loc[(features["ticker"] == ticker) & (features["date"] <= published_at.normalize())].sort_values("date")
+    published_day = _normalize_news_timestamp(published_at)
+    rows = features.loc[(features["ticker"] == ticker) & (features["date"] <= published_day)].sort_values("date")
     if rows.empty:
         return None
     return rows.iloc[-1]
@@ -96,7 +104,7 @@ def build_fingpt_training_data() -> dict:
     train_rows: list[dict] = []
     for row in news_rows:
         ticker = str(row["ticker"]).upper()
-        published_at = pd.Timestamp(row["published_at"])
+        published_at = _normalize_news_timestamp(row["published_at"])
         text = f"{row.get('title', '')}\n{row.get('body', '')}".strip()
         feature_row = _lookup_feature_row(features, ticker, published_at)
         sentiment, sentiment_score = _label_sentiment_from_outcome(feature_row)

@@ -19,28 +19,35 @@ from src.news_ingest import load_news_jsonl_files
 from src.utils import clamp, setup_logging
 
 
+def _normalize_news_timestamp(value: str | pd.Timestamp) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp.normalize()
+
+
 def _recent_news_map(lookback_days: int = LOOKBACK_DAYS, max_items: int = 3) -> dict[tuple[str, str], list[dict]]:
     rows = load_news_jsonl_files()
     by_ticker: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         by_ticker[str(row["ticker"]).upper()].append(row)
     for ticker_rows in by_ticker.values():
-        ticker_rows.sort(key=lambda item: str(item.get("published_at", "")))
+        ticker_rows.sort(key=lambda item: _normalize_news_timestamp(str(item.get("published_at", ""))))
 
     lookup: dict[tuple[str, str], list[dict]] = {}
     for ticker, ticker_rows in by_ticker.items():
         for row in ticker_rows:
-            published_day = pd.Timestamp(row["published_at"]).normalize()
+            published_day = _normalize_news_timestamp(row["published_at"])
             key = (ticker, published_day.date().isoformat())
             lookup.setdefault(key, [])
 
-        all_dates = sorted({pd.Timestamp(row["published_at"]).normalize() for row in ticker_rows})
+        all_dates = sorted({_normalize_news_timestamp(row["published_at"]) for row in ticker_rows})
         for date_value in all_dates:
             window_start = date_value - pd.Timedelta(days=lookback_days)
             items: list[dict] = []
             for row in reversed(ticker_rows):
-                published_at = pd.Timestamp(row["published_at"])
-                if published_at.normalize() > date_value or published_at.normalize() < window_start:
+                published_at = _normalize_news_timestamp(row["published_at"])
+                if published_at > date_value or published_at < window_start:
                     continue
                 items.append(
                     {
