@@ -30,6 +30,7 @@ GOOGLE_NEWS_RSS_TEMPLATE = "https://news.google.com/rss/search?q={query}&hl=en-U
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; YOLO-WALLSTREET/1.0; +https://github.com)"
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
+SUPPORTED_INGEST_MODES = {"direct", "brightdata_proxy", "brightdata_api"}
 
 
 def load_news_jsonl_files() -> list[dict]:
@@ -50,16 +51,28 @@ def _proxy_url() -> str | None:
     return os.getenv("BRIGHTDATA_PROXY_URL") or os.getenv("YOLO_WALLSTREET_PROXY_URL")
 
 
-def _build_opener():
+def _brightdata_api_token() -> str | None:
+    return os.getenv("BRIGHTDATA_API_TOKEN") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_API_TOKEN")
+
+
+def _brightdata_search_endpoint() -> str | None:
+    return os.getenv("BRIGHTDATA_SERP_ENDPOINT") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_SERP_ENDPOINT")
+
+
+def _brightdata_article_endpoint() -> str | None:
+    return os.getenv("BRIGHTDATA_ARTICLE_ENDPOINT") or os.getenv("YOLO_WALLSTREET_BRIGHTDATA_ARTICLE_ENDPOINT")
+
+
+def _build_opener(use_proxy: bool):
     handlers = []
-    proxy_url = _proxy_url()
+    proxy_url = _proxy_url() if use_proxy else None
     if proxy_url:
         handlers.append(ProxyHandler({"http": proxy_url, "https": proxy_url}))
     return build_opener(*handlers)
 
 
-def _fetch_text(url: str, timeout: int = 25) -> str:
-    opener = _build_opener()
+def _fetch_text(url: str, timeout: int = 25, use_proxy: bool = False) -> str:
+    opener = _build_opener(use_proxy=use_proxy)
     request = Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
     with opener.open(request, timeout=timeout) as response:
         content_type = response.headers.get("Content-Type", "")
@@ -67,6 +80,29 @@ def _fetch_text(url: str, timeout: int = 25) -> str:
         if "charset=" in content_type:
             charset = content_type.split("charset=")[-1].split(";")[0].strip()
         return response.read().decode(charset, errors="replace")
+
+
+def _fetch_json(url: str, payload: dict, timeout: int = 30) -> dict | list:
+    token = _brightdata_api_token()
+    if not token:
+        raise RuntimeError("BRIGHTDATA_API_TOKEN is required for brightdata_api mode.")
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    with build_opener().open(request, timeout=timeout) as response:
+        charset = "utf-8"
+        content_type = response.headers.get("Content-Type", "")
+        if "charset=" in content_type:
+            charset = content_type.split("charset=")[-1].split(";")[0].strip()
+        return json.loads(response.read().decode(charset, errors="replace"))
 
 
 def _strip_html(value: str) -> str:
@@ -92,7 +128,7 @@ def _extract_article_body(html: str) -> str:
     return ""
 
 
-def _parse_google_news_rss(xml_text: str, ticker: str, max_items: int, min_published_at: datetime) -> list[dict]:
+def _parse_google_news_rss(xml_text: str, ticker: str, max_items: int, min_published_at: datetime, use_proxy: bool) -> list[dict]:
     root = ET.fromstring(xml_text)
     channel = root.find("channel")
     if channel is None:
@@ -117,7 +153,7 @@ def _parse_google_news_rss(xml_text: str, ticker: str, max_items: int, min_publi
 
         body = description
         try:
-            article_html = _fetch_text(link)
+            article_html = _fetch_text(link, use_proxy=use_proxy)
             extracted = _extract_article_body(article_html)
             if extracted:
                 body = extracted
@@ -143,6 +179,115 @@ def _ticker_query(ticker: str) -> str:
     return f'"{ticker}" stock OR earnings OR guidance OR analyst OR sec'
 
 
+def _coerce_published_at(value: str | None, min_published_at: datetime) -> str | None:
+    if not value:
+        return None
+    parsed: datetime | None = None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            parsed = None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    if parsed < min_published_at:
+        return None
+    return parsed.replace(microsecond=0).isoformat()
+
+
+def _extract_search_items(payload: dict | list) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("results", "items", "data", "articles"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _extract_article_text_from_payload(payload: dict | list) -> str:
+    candidates: list[str] = []
+    if isinstance(payload, dict):
+        for key in ("article_text", "body", "content", "text", "html"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value)
+        for key in ("data", "result"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                for nested_key in ("article_text", "body", "content", "text", "html"):
+                    value = nested.get(nested_key)
+                    if isinstance(value, str) and value.strip():
+                        candidates.append(value)
+    if not candidates and isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, str) and item.strip():
+                candidates.append(item)
+                break
+    if not candidates:
+        return ""
+    best = candidates[0]
+    return _extract_article_body(best) if "<" in best else _strip_html(best)
+
+
+def _brightdata_article_body(url: str) -> str:
+    endpoint = _brightdata_article_endpoint()
+    if not endpoint:
+        raise RuntimeError("BRIGHTDATA_ARTICLE_ENDPOINT is required for brightdata_api mode.")
+    payload = {"url": url, "format": "article_text"}
+    response = _fetch_json(endpoint, payload)
+    body = _extract_article_text_from_payload(response)
+    if not body:
+        raise RuntimeError(f"Bright Data article endpoint returned no body for {url}")
+    return body
+
+
+def _brightdata_search_news(ticker: str, max_items: int, min_published_at: datetime) -> list[dict]:
+    endpoint = _brightdata_search_endpoint()
+    if not endpoint:
+        raise RuntimeError("BRIGHTDATA_SERP_ENDPOINT is required for brightdata_api mode.")
+
+    payload = {
+        "query": _ticker_query(ticker),
+        "type": "news",
+        "limit": max_items,
+        "ticker": ticker,
+    }
+    response = _fetch_json(endpoint, payload)
+    items = _extract_search_items(response)
+    normalized: list[dict] = []
+    for item in items:
+        title = str(item.get("title") or item.get("headline") or "").strip()
+        link = str(item.get("url") or item.get("link") or "").strip()
+        source = str(item.get("source") or item.get("domain") or urlparse(link).netloc or "brightdata").strip()
+        published_at = _coerce_published_at(
+            str(item.get("published_at") or item.get("date") or item.get("published") or ""),
+            min_published_at,
+        )
+        if not title or not link or not published_at:
+            continue
+        body = _brightdata_article_body(link)
+        normalized.append(
+            {
+                "ticker": ticker,
+                "published_at": published_at,
+                "title": title,
+                "body": body,
+                "source": source,
+                "url": link,
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
 def _dedupe_key(row: dict) -> str:
     raw = f"{row.get('ticker','')}|{row.get('published_at','')}|{row.get('title','')}|{row.get('url','')}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -153,8 +298,11 @@ def ingest_news(
     days_back: int = 7,
     max_items_per_ticker: int = 8,
     output_path: Path | None = None,
+    mode: str = "direct",
 ) -> dict:
     ensure_project_dirs()
+    if mode not in SUPPORTED_INGEST_MODES:
+        raise ValueError(f"Unsupported mode: {mode}. Expected one of {sorted(SUPPORTED_INGEST_MODES)}")
     tickers = list(tickers or get_non_benchmark_tickers())
     min_published_at = datetime.now(timezone.utc) - timedelta(days=days_back)
 
@@ -163,13 +311,22 @@ def ingest_news(
     failures: list[dict] = []
 
     for ticker in tickers:
-        query = quote_plus(_ticker_query(ticker))
-        rss_url = GOOGLE_NEWS_RSS_TEMPLATE.format(query=query)
         try:
-            xml_text = _fetch_text(rss_url)
-            rows = _parse_google_news_rss(xml_text, ticker, max_items_per_ticker, min_published_at)
+            if mode == "brightdata_api":
+                rows = _brightdata_search_news(ticker, max_items_per_ticker, min_published_at)
+            else:
+                query = quote_plus(_ticker_query(ticker))
+                rss_url = GOOGLE_NEWS_RSS_TEMPLATE.format(query=query)
+                xml_text = _fetch_text(rss_url, use_proxy=(mode == "brightdata_proxy"))
+                rows = _parse_google_news_rss(
+                    xml_text,
+                    ticker,
+                    max_items_per_ticker,
+                    min_published_at,
+                    use_proxy=(mode == "brightdata_proxy"),
+                )
         except Exception as exc:
-            logging.warning("News RSS fetch failed for %s: %s", ticker, exc)
+            logging.warning("News ingestion failed for %s in mode=%s: %s", ticker, mode, exc)
             failures.append({"ticker": ticker, "error": str(exc)})
             continue
 
@@ -191,7 +348,9 @@ def ingest_news(
         "rows_written": len(output_rows),
         "output_path": str(output_path) if output_rows else None,
         "failures": failures,
-        "used_proxy": bool(_proxy_url()),
+        "mode": mode,
+        "used_proxy": mode == "brightdata_proxy" and bool(_proxy_url()),
+        "used_brightdata_api": mode == "brightdata_api",
     }
     return summary
 
@@ -201,10 +360,16 @@ def main() -> None:
     parser.add_argument("--tickers", help="Comma-separated ticker list. Defaults to non-benchmark universe.")
     parser.add_argument("--days-back", type=int, default=7)
     parser.add_argument("--max-items-per-ticker", type=int, default=8)
+    parser.add_argument("--mode", choices=sorted(SUPPORTED_INGEST_MODES), default="direct")
     args = parser.parse_args()
     setup_logging()
     tickers = [ticker.strip().upper() for ticker in args.tickers.split(",")] if args.tickers else None
-    summary = ingest_news(tickers=tickers, days_back=args.days_back, max_items_per_ticker=args.max_items_per_ticker)
+    summary = ingest_news(
+        tickers=tickers,
+        days_back=args.days_back,
+        max_items_per_ticker=args.max_items_per_ticker,
+        mode=args.mode,
+    )
     print(json.dumps(summary, indent=2))
 
 

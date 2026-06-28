@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+NEWS_INGEST_MODE="${NEWS_INGEST_MODE:-direct}"
+
 python src/download_prices.py
 python src/build_features.py
-python src/news_ingest.py --days-back 7
+python src/news_ingest.py --days-back 7 --mode "$NEWS_INGEST_MODE"
 python src/build_fingpt_training_data.py
 python src/train_n1_fingpt.py --destination production
 python src/build_news_features.py
