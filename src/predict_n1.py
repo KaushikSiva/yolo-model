@@ -22,7 +22,7 @@ def predict_n1(ticker: str, as_of_date: str | None = None) -> dict:
     metadata = load_json(metadata_path)
     if not NEWS_FEATURES_PATH.exists():
         raise FileNotFoundError(
-            f"Missing built news features: {NEWS_FEATURES_PATH}. Run build_news_features.py after FinGPT extraction."
+            f"Missing built news features: {NEWS_FEATURES_PATH}. Run build_news_features.py first."
         )
     df = pd.read_parquet(NEWS_FEATURES_PATH)
     df["date"] = pd.to_datetime(df["date"])
