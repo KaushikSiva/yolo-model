@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,11 @@ REQUIRED_ADJUSTMENT_KEYS = {
     "cited_signals",
     "risk_flags",
 }
+
+
+def _adjuster_disabled() -> bool:
+    value = os.getenv("YOLO_WALLSTREET_DISABLE_ADJUSTER", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def load_adjuster_metadata() -> dict[str, Any]:
@@ -149,6 +155,16 @@ def adjust_prediction(
     baseline_risk_flags: list[str],
     news_features: dict[str, float],
 ) -> dict[str, Any]:
+    if _adjuster_disabled():
+        return _default_adjustment(
+            ticker=ticker,
+            horizon=horizon,
+            baseline_predicted_return=baseline_predicted_return,
+            current_close=current_close,
+            model_version="disabled",
+            note="The Gemma adjuster is disabled for this environment, so the baseline forecast was returned unchanged.",
+        )
+
     metadata = load_adjuster_metadata()
     model_dir = Path(metadata.get("artifact_path", ADJUSTER_PRODUCTION_DIR))
     if not model_dir.exists():

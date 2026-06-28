@@ -269,23 +269,37 @@ You can also set `BRIGHTDATA_ZONE` instead of `BRIGHTDATA_SERP_ZONE` if you pref
 
 ## Mac Inference
 
-Mac inference is supported for the numeric prediction service, but the strict architecture assumes trained artifacts already exist.
+Mac inference is supported for the numeric prediction service, but it assumes trained artifacts already exist and are copied from a GPU-trained environment.
 
-Local inference:
+From the GPU box, export a Mac bundle:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python src/init_db.py
-python src/predict_ensemble.py --ticker AAPL --horizon 5d --log
-uvicorn src.api:app --reload --port 8000
+bash scripts/export_for_mac.sh
 ```
 
-Important:
+On the Mac:
+
+```bash
+cd yolo-wallstreet-mac
+bash scripts/run_mac_inference.sh
+```
+
+Sample requests:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/model
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"ticker":"AAPL","horizon":"5d","log":true}'
+```
+
+Pre-setup requirements:
 
 - training is NVIDIA-first
-- inference on Mac should use prebuilt artifacts
+- inference on Mac should use prebuilt artifacts exported from the GPU machine
+- `features.parquet`, `chronos_features.parquet`, and `news_features.parquet` must be present
+- the Mac helper disables the Gemma adjuster by default via `YOLO_WALLSTREET_DISABLE_ADJUSTER=1`
 - large local LLM inference on Mac is not the default path here
 
 ## Daily / Weekly Jobs
