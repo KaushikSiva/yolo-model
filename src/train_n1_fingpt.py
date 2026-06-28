@@ -13,6 +13,7 @@ from pathlib import Path
 from src.build_fingpt_training_data import build_fingpt_training_data
 from src.config import CANDIDATES_DIR, N1_FINGPT_TRAIN_PATH, N1_PRODUCTION_DIR, ensure_project_dirs
 from src.device import is_training_gpu_available
+from src.training_precision import resolve_mixed_precision
 from src.trl_compat import build_sft_trainer
 from src.utils import save_json, setup_logging, utc_now_iso
 
@@ -87,7 +88,12 @@ def train_n1_fingpt(
         print(f"Training data too small ({len(dataset)} rows). Add more event examples before FinGPT LoRA training.")
         return None
 
-    tokenizer, model, peft_config = _load_model_and_tokenizer(base_model, quant_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16), torch=torch)
+    precision = resolve_mixed_precision(torch)
+    tokenizer, model, peft_config = _load_model_and_tokenizer(
+        base_model,
+        quant_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=precision["bnb_4bit_compute_dtype"]),
+        torch=torch,
+    )
     tokenizer.pad_token = tokenizer.eos_token
 
     def format_row(row: dict) -> str:
@@ -117,7 +123,8 @@ def train_n1_fingpt(
         save_steps=50,
         learning_rate=1e-4,
         warmup_ratio=0.05,
-        fp16=True,
+        fp16=precision["fp16"],
+        bf16=precision["bf16"],
         report_to=[],
     )
     trainer = build_sft_trainer(

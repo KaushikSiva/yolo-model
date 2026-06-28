@@ -12,6 +12,7 @@ from datetime import datetime
 from src.config import CANDIDATES_DIR, N1_GEMMA_TRAIN_PATH, ensure_project_dirs
 from src.device import is_training_gpu_available
 from src.n1_training_data import build_weak_supervision_dataset
+from src.training_precision import resolve_mixed_precision
 from src.trl_compat import build_sft_trainer
 from src.utils import save_json, setup_logging, utc_now_iso
 
@@ -53,7 +54,8 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
         )
 
     dataset = dataset.map(lambda row: {"text": format_row(row)})
-    quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+    precision = resolve_mixed_precision(torch)
+    quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=precision["bnb_4bit_compute_dtype"])
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         quantization_config=quant_config,
@@ -79,7 +81,8 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
         save_steps=50,
         learning_rate=1e-4,
         warmup_ratio=0.05,
-        fp16=True,
+        fp16=precision["fp16"],
+        bf16=precision["bf16"],
         report_to=[],
     )
     trainer = build_sft_trainer(
