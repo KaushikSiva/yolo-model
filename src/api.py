@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 
 from src.build_training_dataset import build_training_dataset
-from src.config import DEFAULT_HORIZON, ENSEMBLE_PRODUCTION_DIR, N1_PRODUCTION_DIR, PLANNER_PRODUCTION_DIR, T1_CHRONOS_PRODUCTION_DIR, T1_PRODUCTION_DIR
+from src.config import ADJUSTER_PRODUCTION_DIR, DEFAULT_HORIZON, ENSEMBLE_PRODUCTION_DIR, N1_PRODUCTION_DIR, T1_CHRONOS_PRODUCTION_DIR, T1_PRODUCTION_DIR
 from src.db import create_tables, get_engine, predictions_table
 from src.evaluate_candidate import evaluate_candidate_model
 from src.init_db import main as init_db_main
@@ -49,7 +49,7 @@ def model_info() -> dict:
         "t1_chronos": T1_CHRONOS_PRODUCTION_DIR,
         "n1": N1_PRODUCTION_DIR,
         "ensemble": ENSEMBLE_PRODUCTION_DIR,
-        "planner": PLANNER_PRODUCTION_DIR,
+        "adjuster": ADJUSTER_PRODUCTION_DIR,
     }.items():
         metadata_path = path / "metadata.json"
         payload[name] = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else None

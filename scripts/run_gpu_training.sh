@@ -13,6 +13,6 @@ echo "Install GPU extras first: pip install -r requirements-gpu.txt"
 "$PYTHON_BIN" src/train_t1_gpu.py --destination production
 "$PYTHON_BIN" src/train_n1_fingpt.py --destination production
 "$PYTHON_BIN" src/build_news_features.py
-"$PYTHON_BIN" src/build_planner_training_data.py
-"$PYTHON_BIN" src/train_planner_gemma.py --destination production
 "$PYTHON_BIN" src/train_ensemble.py --destination production
+"$PYTHON_BIN" src/build_adjuster_training_data.py
+"$PYTHON_BIN" src/train_adjuster_gemma.py --destination production

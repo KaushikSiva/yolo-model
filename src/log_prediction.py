@@ -32,9 +32,9 @@ def log_prediction(prediction: dict, features_snapshot: dict | None = None, db_p
         "t1_model_version": prediction["model_versions"].get("t1"),
         "n1_model_version": prediction["model_versions"].get("n1"),
         "ensemble_model_version": prediction["model_versions"].get("ensemble"),
-        "planner_model_version": prediction["model_versions"].get("planner"),
+        "adjuster_model_version": prediction["model_versions"].get("adjuster"),
         "features_json": json_dumps(features_snapshot or {}),
-        "planner_json": json_dumps(prediction.get("planner", {})),
+        "adjuster_json": json_dumps(prediction.get("adjuster", {})),
     }
     engine = get_engine(db_path)
     with engine.begin() as connection:

@@ -64,3 +64,39 @@ def test_brightdata_request_api_article_fetch_uses_zone_and_extracts_html(monkey
     assert body == "This is a long enough article paragraph to be extracted correctly by the parser."
     assert captured[0][0] == "https://api.brightdata.com/request"
     assert captured[0][1] == {"zone": "web_unlocker1", "url": "https://example.com/article"}
+
+
+def test_ingest_news_persists_successful_tickers_before_later_failures(tmp_path, monkeypatch) -> None:
+    output_path = tmp_path / "news.jsonl"
+
+    monkeypatch.setattr(news_ingest, "load_news_jsonl_files", lambda: [])
+
+    def fake_search(ticker: str, max_items: int, min_published_at) -> list[dict]:
+        if ticker == "AAPL":
+            return [
+                {
+                    "ticker": "AAPL",
+                    "published_at": "2026-06-20T12:00:00+00:00",
+                    "title": "Apple launches a new product",
+                    "body": "Body",
+                    "source": "Reuters",
+                    "url": "https://example.com/aapl",
+                }
+            ]
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(news_ingest, "_brightdata_search_news", fake_search)
+
+    summary = news_ingest.ingest_news(
+        tickers=["AAPL", "MSFT"],
+        days_back=7,
+        output_path=output_path,
+        mode="brightdata_api",
+    )
+
+    lines = output_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert '"ticker": "AAPL"' in lines[0]
+    assert summary["rows_written"] == 1
+    assert summary["output_path"] == str(output_path)
+    assert summary["failures"] == [{"ticker": "MSFT", "error": "simulated failure"}]

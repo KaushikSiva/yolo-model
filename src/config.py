@@ -35,12 +35,14 @@ EXAMPLE_NEWS_PATH = RAW_NEWS_DIR / "example_news.jsonl"
 N1_GEMMA_TRAIN_PATH = PROCESSED_DIR / "n1_gemma_train.jsonl"
 N1_FINGPT_TRAIN_PATH = PROCESSED_DIR / "n1_fingpt_train.jsonl"
 PLANNER_GEMMA_TRAIN_PATH = PROCESSED_DIR / "planner_gemma_train.jsonl"
+ADJUSTER_GEMMA_TRAIN_PATH = PROCESSED_DIR / "adjuster_gemma_train.jsonl"
 
 T1_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "t1"
 T1_CHRONOS_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "t1_chronos"
 N1_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "n1"
 ENSEMBLE_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "ensemble"
 PLANNER_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "planner"
+ADJUSTER_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "adjuster"
 
 BENCHMARK_TICKERS = {"QQQ", "SPY", "XLK", "SMH", "ARKK"}
 DEFAULT_HORIZON = "5d"
@@ -116,12 +118,14 @@ def ensure_project_dirs() -> None:
         N1_PRODUCTION_DIR,
         ENSEMBLE_PRODUCTION_DIR,
         PLANNER_PRODUCTION_DIR,
+        ADJUSTER_PRODUCTION_DIR,
         CANDIDATES_DIR / "t1",
         CANDIDATES_DIR / "t1_gpu",
         CANDIDATES_DIR / "n1",
         CANDIDATES_DIR / "n1_fingpt",
         CANDIDATES_DIR / "n1_gemma_lora",
         CANDIDATES_DIR / "planner_gemma",
+        CANDIDATES_DIR / "adjuster_gemma",
         CANDIDATES_DIR / "ensemble",
         ARCHIVED_MODELS_DIR,
         REPORTS_DIR,

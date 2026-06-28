@@ -38,28 +38,28 @@ The active architecture is:
   - `FinGPT`-style structured event extractor
   - input: real ingested news/articles
   - output: structured JSON features, not raw price predictions
-- `YOLO-WALLSTREET-planner`
-  - `Gemma` planner for retrieval decisions
-  - input: market state + real news availability
-  - output: structured retrieval plan JSON
 - `YOLO-WALLSTREET-ensemble`
-  - numeric final predictor
+  - CUDA `XGBoost` baseline predictor
   - combines engineered market features, Chronos prior features, and FinGPT event features
+- `YOLO-WALLSTREET-adjuster`
+  - `Gemma` post-prediction adjuster
+  - input: baseline predicted return, volatility/risk context, and fresh Bright Data news
+  - output: bounded `adjustment_bps` applied to the baseline return
 
 The final prediction flow is:
 
-`ticker + market features + Chronos prior + FinGPT event features + planner context -> ensemble predicted_return -> expected_close`
+`ticker + market features + Chronos prior + FinGPT event features -> XGBoost baseline predicted_return -> Gemma news adjustment -> adjusted predicted_return -> expected_close`
 
 ## Strict Mode
 
 This repo now runs in strict mode.
 
 - no seeded example news
-- no heuristic planner fallback in live prediction
+- no heuristic LLM fallback in live prediction
 - no `t1` fallback when ensemble is missing
 - no placeholder news-feature fallback in live prediction
 
-If Chronos features, FinGPT artifacts, Gemma planner artifacts, or the ensemble model are missing, the relevant commands fail loudly.
+If Chronos features, FinGPT artifacts, the XGBoost ensemble, or the Gemma adjuster artifacts are missing, the relevant commands fail loudly.
 
 ## Data Sources
 
@@ -160,31 +160,32 @@ Structured event-feature generation:
 
 - [src/build_news_features.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_news_features.py)
 
-### `planner / Gemma`
+### `adjuster / Gemma`
 
 Source:
 
 - real market states from [data/processed/features.parquet](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/processed/features.parquet)
-- real ingested news availability and source domains from [data/raw/news](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/raw/news)
+- real raw news articles ingested from Bright Data into [data/raw/news](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/raw/news)
 - built news features from [data/processed/news_features.parquet](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/processed/news_features.parquet)
+- baseline ensemble predictions produced by [src/train_ensemble.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_ensemble.py)
 
 Training-data builder:
 
-- [src/build_planner_training_data.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_planner_training_data.py)
+- [src/build_adjuster_training_data.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_adjuster_training_data.py)
 
 Training dataset:
 
-- [data/processed/planner_gemma_train.jsonl](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/processed/planner_gemma_train.jsonl)
+- [data/processed/adjuster_gemma_train.jsonl](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/processed/adjuster_gemma_train.jsonl)
 
-Planner training entrypoint:
+Adjuster training entrypoint:
 
-- [src/train_planner_gemma.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_planner_gemma.py)
+- [src/train_adjuster_gemma.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_adjuster_gemma.py)
 
-Live planner inference:
+Live adjuster inference:
 
-- [src/planner.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/planner.py)
+- [src/adjuster.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/adjuster.py)
 
-### `ensemble`
+### `ensemble / XGBoost baseline`
 
 Source:
 
@@ -219,19 +220,19 @@ pip install -r requirements-gpu.txt
 Full strict training flow:
 
 ```bash
-python src/download_prices.py
-python src/build_features.py
-python src/news_ingest.py --days-back 30
-python src/train_t1_chronos.py --base-model amazon/chronos-2
-python src/build_fingpt_training_data.py
-python src/train_n1_fingpt.py --destination production --base-model FinGPT/fingpt-forecaster
-python src/build_news_features.py
-python src/build_planner_training_data.py
-python src/train_planner_gemma.py --destination production --base-model google/gemma-3-4b-it
-python src/train_t1_gpu.py --destination production
-python src/train_ensemble.py --destination production
-python src/init_db.py
-python src/predict_ensemble.py --ticker AAPL --horizon 5d --log
+python3 src/download_prices.py
+python3 src/build_features.py
+python3 src/news_ingest.py --days-back 30
+python3 src/train_t1_chronos.py --base-model amazon/chronos-2
+python3 src/build_fingpt_training_data.py
+python3 src/train_n1_fingpt.py --destination production --base-model FinGPT/fingpt-forecaster
+python3 src/build_news_features.py
+python3 src/train_t1_gpu.py --destination production
+python3 src/train_ensemble.py --destination production
+python3 src/build_adjuster_training_data.py
+python3 src/train_adjuster_gemma.py --destination production --base-model google/gemma-3-4b-it
+python3 src/init_db.py
+python3 src/predict_ensemble.py --ticker AAPL --horizon 5d --log
 ```
 
 Or run:
@@ -319,10 +320,10 @@ This now does:
 - rebuild FinGPT training data
 - retrain FinGPT
 - rebuild event features
-- rebuild planner training data
-- retrain Gemma planner
 - update outcomes
 - retrain/evaluate/promote ensemble candidates
+- rebuild adjuster training data from the new baseline ensemble
+- retrain Gemma adjuster
 
 ## API
 
@@ -345,9 +346,9 @@ curl -X POST http://127.0.0.1:8000/predict \
 - [src/news_ingest.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/news_ingest.py)
 - [src/build_fingpt_training_data.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_fingpt_training_data.py)
 - [src/build_news_features.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_news_features.py)
-- [src/build_planner_training_data.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_planner_training_data.py)
+- [src/build_adjuster_training_data.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/build_adjuster_training_data.py)
 - [src/train_t1_chronos.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_t1_chronos.py)
 - [src/train_n1_fingpt.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_n1_fingpt.py)
-- [src/train_planner_gemma.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_planner_gemma.py)
+- [src/train_adjuster_gemma.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_adjuster_gemma.py)
 - [src/train_ensemble.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/train_ensemble.py)
 - [src/predict_ensemble.py](/Users/kaushiksivakumar/workspace/yolo-wallstreet/src/predict_ensemble.py)

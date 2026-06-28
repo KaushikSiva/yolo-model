@@ -395,12 +395,22 @@ def ingest_news(
         raise ValueError(f"Unsupported mode: {mode}. Expected one of {sorted(SUPPORTED_INGEST_MODES)}")
     tickers = list(tickers or get_non_benchmark_tickers())
     min_published_at = datetime.now(timezone.utc) - timedelta(days=days_back)
+    output_path = output_path or RAW_NEWS_DIR / f"news_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
 
     existing = {_dedupe_key(row) for row in load_news_jsonl_files()}
-    output_rows: list[dict] = []
     failures: list[dict] = []
+    rows_written = 0
 
-    for ticker in tickers:
+    logging.info(
+        "Starting news ingestion for %s tickers in mode=%s days_back=%s max_items_per_ticker=%s",
+        len(tickers),
+        mode,
+        days_back,
+        max_items_per_ticker,
+    )
+
+    for index, ticker in enumerate(tickers, start=1):
+        logging.info("Ingesting news for %s (%s/%s)", ticker, index, len(tickers))
         try:
             if mode == "brightdata_api":
                 rows = _brightdata_search_news(ticker, max_items_per_ticker, min_published_at)
@@ -420,28 +430,46 @@ def ingest_news(
             failures.append({"ticker": ticker, "error": str(exc)})
             continue
 
+        ticker_new_rows: list[dict] = []
+        duplicate_count = 0
         for row in rows:
             key = _dedupe_key(row)
             if key in existing:
+                duplicate_count += 1
                 continue
             existing.add(key)
-            output_rows.append(row)
+            ticker_new_rows.append(row)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_path = output_path or RAW_NEWS_DIR / f"news_{timestamp}.jsonl"
-    if output_rows:
-        with output_path.open("w", encoding="utf-8") as handle:
-            for row in output_rows:
-                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        if ticker_new_rows:
+            with output_path.open("a", encoding="utf-8") as handle:
+                for row in ticker_new_rows:
+                    handle.write(json.dumps(row, sort_keys=True) + "\n")
+            rows_written += len(ticker_new_rows)
+        logging.info(
+            "Completed %s: fetched=%s new=%s duplicates=%s cumulative_written=%s",
+            ticker,
+            len(rows),
+            len(ticker_new_rows),
+            duplicate_count,
+            rows_written,
+        )
+
     summary = {
         "tickers_requested": len(tickers),
-        "rows_written": len(output_rows),
-        "output_path": str(output_path) if output_rows else None,
+        "rows_written": rows_written,
+        "output_path": str(output_path) if rows_written else None,
         "failures": failures,
         "mode": mode,
         "used_proxy": mode == "brightdata_proxy" and bool(_proxy_url()),
         "used_brightdata_api": mode == "brightdata_api",
     }
+    logging.info(
+        "Finished news ingestion: tickers=%s rows_written=%s failures=%s output_path=%s",
+        len(tickers),
+        rows_written,
+        len(failures),
+        summary["output_path"],
+    )
     return summary
 
 

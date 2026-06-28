@@ -12,11 +12,11 @@ import json
 import numpy as np
 import pandas as pd
 
+from src.adjuster import adjust_prediction
 from src.config import CHRONOS_FEATURE_COLUMNS, DEFAULT_HORIZON, ENSEMBLE_PRODUCTION_DIR, T1_FEATURE_COLUMNS
 from src.feature_store import load_chronos_features, load_price_features
 from src.log_prediction import log_prediction
 from src.modeling import load_model_bundle
-from src.planner import plan_retrieval
 from src.predict_n1 import predict_n1
 from src.predict_t1 import predict_t1
 from src.utils import business_day_offset, clamp, confidence_label, summarize_feature_drivers
@@ -70,7 +70,7 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
     news_payload = _load_news_payload(ticker, as_of_date)
     news_features = news_payload["news_features"]
     chronos_features = _load_chronos_row(ticker, as_of_date)
-    missing_news = False
+    missing_news = float(news_features.get("news_count", 0.0) or 0.0) == 0.0
 
     ensemble_model, ensemble_metadata = load_model_bundle(ENSEMBLE_PRODUCTION_DIR)
     feature_columns = ensemble_metadata["feature_columns"]
@@ -78,14 +78,35 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
     feature_values.update(chronos_features)
     feature_values.update(news_features)
     feature_frame = pd.DataFrame([feature_values])
-    predicted_return = float(ensemble_model.predict(feature_frame[feature_columns])[0])
+    baseline_predicted_return = float(ensemble_model.predict(feature_frame[feature_columns])[0])
     ensemble_version = ensemble_metadata["model_version"]
     importances = getattr(ensemble_model, "feature_importances_", None)
     driver_row = pd.Series(feature_values)
 
     target_date = business_day_offset(as_of_date, horizon)
-    expected_close = current_close * (1.0 + predicted_return)
     volatility = float(row.get("volatility_20d", 0.02) or 0.02)
+    baseline_risk_flags = []
+    if missing_news:
+        baseline_risk_flags.append("missing_news_features")
+    if volatility > 0.05:
+        baseline_risk_flags.append("high_volatility")
+    if int(row.get("rapid_move", 0) or 0) == 1:
+        baseline_risk_flags.append("recent_rapid_move")
+    if abs(baseline_predicted_return) > 0.08:
+        baseline_risk_flags.append("large_baseline_move")
+
+    adjuster = adjust_prediction(
+        ticker=ticker,
+        as_of_date=as_of_date,
+        horizon=horizon,
+        current_close=current_close,
+        baseline_predicted_return=baseline_predicted_return,
+        volatility_20d=volatility,
+        baseline_risk_flags=baseline_risk_flags,
+        news_features=news_features,
+    )
+    predicted_return = baseline_predicted_return + (float(adjuster["adjustment_bps"]) / 10_000.0)
+    expected_close = current_close * (1.0 + predicted_return)
     spread = max(volatility, 0.015)
     bear_case = current_close * (1.0 + predicted_return - spread)
     bull_case = current_close * (1.0 + predicted_return + spread)
@@ -96,29 +117,19 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         t1_pred=float(t1_payload["t1_predicted_return"]),
         ensemble_pred=predicted_return,
     )
-    planner = plan_retrieval(
-        ticker=ticker,
-        feature_row=row,
-        news_features=news_features,
-        t1_payload=t1_payload,
-        horizon=horizon,
-        current_close=current_close,
-    )
-    if planner["should_retrieve"]:
-        confidence_score = round(clamp(confidence_score - 0.05, 0.2, 0.95), 4)
+    if abs(float(adjuster["adjustment_bps"])) >= 100:
+        confidence_score = round(clamp(confidence_score - 0.04, 0.2, 0.95), 4)
+        confidence = confidence_label(confidence_score)
+    if float(adjuster["confidence"]) < 0.35:
+        confidence_score = round(clamp(confidence_score - 0.03, 0.2, 0.95), 4)
         confidence = confidence_label(confidence_score)
 
-    risk_flags = []
-    if missing_news:
-        risk_flags.append("missing_news_features")
-    if volatility > 0.05:
-        risk_flags.append("high_volatility")
-    if int(row.get("rapid_move", 0) or 0) == 1:
-        risk_flags.append("recent_rapid_move")
+    risk_flags = list(baseline_risk_flags)
     if abs(predicted_return) > 0.08:
-        risk_flags.append("large_predicted_move")
-    if planner["should_retrieve"]:
-        risk_flags.append("planner_requests_live_retrieval")
+        risk_flags.append("large_adjusted_move")
+    if abs(float(adjuster["adjustment_bps"])) >= 100:
+        risk_flags.append("large_llm_adjustment")
+    risk_flags.extend(str(flag) for flag in adjuster["risk_flags"] if str(flag) not in risk_flags)
 
     result = {
         "ticker": ticker,
@@ -126,6 +137,9 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         "target_horizon": horizon,
         "target_date": target_date,
         "current_close": round(current_close, 4),
+        "baseline_expected_close": round(current_close * (1.0 + baseline_predicted_return), 4),
+        "baseline_predicted_return": round(baseline_predicted_return, 6),
+        "adjustment_bps": int(adjuster["adjustment_bps"]),
         "expected_close": round(expected_close, 4),
         "predicted_return": round(predicted_return, 6),
         "bear_case": round(bear_case, 4),
@@ -136,18 +150,18 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
             "t1": t1_payload["t1_model_version"],
             "n1": news_payload["n1_model_version"],
             "ensemble": ensemble_version,
-            "planner": planner["planner_model_version"],
+            "adjuster": adjuster["adjuster_model_version"],
         },
         "main_drivers": summarize_feature_drivers(driver_row, feature_columns, importances=importances, limit=5),
         "risk_flags": risk_flags,
-        "planner": planner,
-        "sources_used": planner["suggested_sources"],
+        "adjuster": adjuster,
+        "sources_used": adjuster["sources_used"],
     }
 
     if should_log:
         prediction_id = log_prediction(
             result,
-            features_snapshot={"t1": t1_payload, "chronos": chronos_features, "n1": news_features, "planner": planner},
+            features_snapshot={"t1": t1_payload, "chronos": chronos_features, "n1": news_features, "adjuster": adjuster},
         )
         result["prediction_id"] = prediction_id
 

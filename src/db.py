@@ -28,8 +28,10 @@ predictions_table = Table(
     Column("n1_model_version", String),
     Column("ensemble_model_version", String),
     Column("planner_model_version", String),
+    Column("adjuster_model_version", String),
     Column("features_json", Text),
     Column("planner_json", Text),
+    Column("adjuster_json", Text),
     Column("actual_close", Float),
     Column("actual_return", Float),
     Column("absolute_error", Float),
@@ -78,6 +80,8 @@ def _ensure_sqlite_columns(engine: Engine) -> None:
     expected_columns = {
         "planner_model_version": "TEXT",
         "planner_json": "TEXT",
+        "adjuster_model_version": "TEXT",
+        "adjuster_json": "TEXT",
     }
     with engine.begin() as connection:
         existing = {

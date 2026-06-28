@@ -7,9 +7,9 @@ import joblib
 import pandas as pd
 from sklearn.dummy import DummyRegressor
 
+from src import adjuster as adjuster_module
 from src import config as config_module
 from src import db as db_module
-from src import planner as planner_module
 from src import predict_ensemble as predict_ensemble_module
 from src import predict_n1 as predict_n1_module
 from src import predict_t1 as predict_t1_module
@@ -30,7 +30,7 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
     chronos_path = tmp_path / "chronos_features.parquet"
     n1_dir = tmp_path / "models" / "production" / "n1"
     ensemble_dir = tmp_path / "models" / "production" / "ensemble"
-    planner_dir = tmp_path / "models" / "production" / "planner"
+    adjuster_dir = tmp_path / "models" / "production" / "adjuster"
     db_path = tmp_path / "test.db"
 
     feature_row = {
@@ -95,7 +95,7 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(predict_n1_module, "NEWS_FEATURES_PATH", news_path)
     monkeypatch.setattr(predict_n1_module, "N1_PRODUCTION_DIR", n1_dir)
     monkeypatch.setattr(predict_ensemble_module, "ENSEMBLE_PRODUCTION_DIR", ensemble_dir)
-    monkeypatch.setattr(planner_module, "PLANNER_PRODUCTION_DIR", planner_dir)
+    monkeypatch.setattr(adjuster_module, "ADJUSTER_PRODUCTION_DIR", adjuster_dir)
     monkeypatch.setattr(
         predict_ensemble_module,
         "load_price_features",
@@ -113,20 +113,21 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr(
         predict_ensemble_module,
-        "plan_retrieval",
+        "adjust_prediction",
         lambda **_: {
-            "planner_model_version": "YOLO-WALLSTREET-planner-vtest",
-            "planner_backend": "gemma_local",
-            "should_retrieve": False,
-            "urgency": "low",
-            "urgency_score": 0.1,
+            "adjuster_model_version": "YOLO-WALLSTREET-adjuster-vtest",
+            "adjuster_backend": "gemma_local",
             "target_horizon": "5d",
             "ticker": "AAPL",
-            "current_close": 200.0,
-            "triggers": [],
-            "suggested_sources": [],
-            "query_terms": [],
-            "notes": "test",
+            "baseline_predicted_return": 0.02,
+            "baseline_expected_close": 204.0,
+            "adjustment_bps": 30,
+            "confidence": 0.8,
+            "rationale": "fresh positive news",
+            "cited_signals": ["earnings_headlines"],
+            "risk_flags": [],
+            "sources_used": ["Reuters"],
+            "recent_news": [],
         },
     )
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
@@ -140,6 +141,9 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
         "target_horizon",
         "target_date",
         "current_close",
+        "baseline_expected_close",
+        "baseline_predicted_return",
+        "adjustment_bps",
         "expected_close",
         "predicted_return",
         "bear_case",
@@ -149,14 +153,15 @@ def test_prediction_output_and_logging(tmp_path, monkeypatch) -> None:
         "model_versions",
         "main_drivers",
         "risk_flags",
-        "planner",
+        "adjuster",
         "sources_used",
     }
     assert required_keys.issubset(prediction.keys())
-    assert "planner" in prediction["model_versions"]
+    assert prediction["predicted_return"] == 0.023
+    assert "adjuster" in prediction["model_versions"]
 
     prediction_id = log_prediction(prediction, features_snapshot={"stub": True}, db_path=str(db_path))
     engine = get_engine(str(db_path))
     with engine.begin() as connection:
-        rows = list(connection.exec_driver_sql("SELECT prediction_id, planner_json FROM predictions"))
+        rows = list(connection.exec_driver_sql("SELECT prediction_id, adjuster_json FROM predictions"))
     assert any(row[0] == prediction_id and row[1] for row in rows)
