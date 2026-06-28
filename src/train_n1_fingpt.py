@@ -16,10 +16,20 @@ from src.device import is_training_gpu_available
 from src.utils import save_json, setup_logging, utc_now_iso
 
 
+KNOWN_BASE_MODEL_ALIASES = {
+    "base_models/Llama-2-7b-chat-hf": "meta-llama/Llama-2-7b-chat-hf",
+    "base_models/Meta-Llama-3-8B": "meta-llama/Meta-Llama-3-8B",
+}
+
+
 def _resolve_output_dir(destination: str) -> Path:
     if destination == "production":
         return N1_PRODUCTION_DIR
     return CANDIDATES_DIR / "n1_fingpt" / datetime.utcnow().strftime("%Y%m%d%H%M%S")
+
+
+def _normalize_base_model_id(model_id: str) -> str:
+    return KNOWN_BASE_MODEL_ALIASES.get(model_id, model_id)
 
 
 def _load_model_and_tokenizer(base_model: str, quant_config, torch):
@@ -29,14 +39,16 @@ def _load_model_and_tokenizer(base_model: str, quant_config, torch):
     try:
         peft_config = PeftConfig.from_pretrained(base_model)
     except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        resolved_base_model = _normalize_base_model_id(base_model)
+        tokenizer = AutoTokenizer.from_pretrained(resolved_base_model)
         model = AutoModelForCausalLM.from_pretrained(
-            base_model,
+            resolved_base_model,
             quantization_config=quant_config,
             device_map="auto",
         )
         return tokenizer, model, None
 
+    peft_config.base_model_name_or_path = _normalize_base_model_id(peft_config.base_model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(peft_config.base_model_name_or_path)
     model = AutoModelForCausalLM.from_pretrained(
         peft_config.base_model_name_or_path,

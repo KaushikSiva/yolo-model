@@ -6,6 +6,11 @@ from types import SimpleNamespace
 from src import train_n1_fingpt as module
 
 
+def test_normalize_base_model_id_rewrites_known_fingpt_alias() -> None:
+    assert module._normalize_base_model_id("base_models/Llama-2-7b-chat-hf") == "meta-llama/Llama-2-7b-chat-hf"
+    assert module._normalize_base_model_id("meta-llama/Meta-Llama-3-8B") == "meta-llama/Meta-Llama-3-8B"
+
+
 def test_load_model_and_tokenizer_uses_base_model_for_peft_repo(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
