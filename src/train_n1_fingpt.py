@@ -22,6 +22,30 @@ def _resolve_output_dir(destination: str) -> Path:
     return CANDIDATES_DIR / "n1_fingpt" / datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
 
+def _load_model_and_tokenizer(base_model: str, quant_config, torch):
+    from peft import PeftConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    try:
+        peft_config = PeftConfig.from_pretrained(base_model)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            quantization_config=quant_config,
+            device_map="auto",
+        )
+        return tokenizer, model, None
+
+    tokenizer = AutoTokenizer.from_pretrained(peft_config.base_model_name_or_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        peft_config.base_model_name_or_path,
+        quantization_config=quant_config,
+        device_map="auto",
+    )
+    return tokenizer, model, peft_config
+
+
 def train_n1_fingpt(
     base_model: str = "FinGPT/fingpt-forecaster",
     destination: str = "candidate",
@@ -38,8 +62,8 @@ def train_n1_fingpt(
     try:
         import torch
         from datasets import load_dataset
-        from peft import LoraConfig, get_peft_model
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
+        from peft import LoraConfig, PeftModel, get_peft_model
+        from transformers import BitsAndBytesConfig, TrainingArguments
         from trl import SFTTrainer
     except ImportError:
         print("GPU dependencies are missing. Install requirements-gpu.txt first.")
@@ -50,28 +74,25 @@ def train_n1_fingpt(
         print(f"Training data too small ({len(dataset)} rows). Add more event examples before FinGPT LoRA training.")
         return None
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer, model, peft_config = _load_model_and_tokenizer(base_model, quant_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16), torch=torch)
     tokenizer.pad_token = tokenizer.eos_token
 
     def format_row(row: dict) -> str:
         return f"Instruction: {row['instruction']}\nInput: {row['input']}\nOutput: {row['output']}"
 
     dataset = dataset.map(lambda row: {"text": format_row(row)})
-    quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        quantization_config=quant_config,
-        device_map="auto",
-    )
     model.gradient_checkpointing_enable()
-    lora_config = LoraConfig(
-        r=32,
-        lora_alpha=64,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, lora_config)
+    if peft_config is not None:
+        model = PeftModel.from_pretrained(model, base_model, is_trainable=True)
+    else:
+        lora_config = LoraConfig(
+            r=32,
+            lora_alpha=64,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
 
     output_dir = _resolve_output_dir(destination)
     training_args = TrainingArguments(
@@ -103,8 +124,9 @@ def train_n1_fingpt(
         "model_version": f"YOLO-WALLSTREET-n1-fingpt-v{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         "trained_at": utc_now_iso(),
         "base_model": base_model,
+        "resolved_base_model": peft_config.base_model_name_or_path if peft_config is not None else base_model,
         "artifact_path": str(output_dir),
-        "training_recipe": "FinGPT_style_LoRA",
+        "training_recipe": "FinGPT_style_existing_adapter_finetune" if peft_config is not None else "FinGPT_style_LoRA",
         "training_rows": int(len(dataset)),
         "training_accelerator": "nvidia_cuda",
         "mac_inference_supported": False,
