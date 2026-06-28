@@ -76,15 +76,17 @@ def _keyword_counts(text: str) -> dict[str, int]:
 
 
 def _build_prompt(row: dict) -> str:
+    market_context = row.get("market_context", {})
     return (
-        "Extract stock-relevant trading features as valid JSON. "
-        "Return only valid JSON with keys sentiment, sentiment_score, catalyst_type, "
-        "company_specific, risk_flags, novelty, likely_horizon, confidence.\n\n"
+        "Instruction: Extract stock-relevant trading features as valid JSON.\n"
+        "Input: "
         f"Ticker: {row['ticker']}\n"
         f"Date: {pd.Timestamp(row['published_at']).date().isoformat()}\n"
         f"Headline: {row.get('title', '')}\n"
         f"Article: {row.get('body', '')}\n"
         f"Source: {row.get('source', '')}\n"
+        f"MarketContext: {json.dumps(market_context, sort_keys=True)}\n"
+        "Output: "
     )
 
 
@@ -101,12 +103,33 @@ def _load_fingpt_model_dir() -> Path:
     return model_dir
 
 
-def _infer_fingpt_event_rows(model_dir: Path, news_rows: list[dict]) -> pd.DataFrame:
+def _lookup_market_context(features: pd.DataFrame, ticker: str, published_at: str | pd.Timestamp) -> dict:
+    published_day = pd.Timestamp(published_at)
+    if published_day.tzinfo is not None:
+        published_day = published_day.tz_convert("UTC").tz_localize(None)
+    published_day = published_day.normalize()
+    rows = features.loc[(features["ticker"] == ticker) & (features["date"] <= published_day)].sort_values("date")
+    if rows.empty:
+        return {}
+    feature_row = rows.iloc[-1]
+    return {
+        "ret_1d": round(float(feature_row.get("ret_1d", 0.0) or 0.0), 4),
+        "ret_5d": round(float(feature_row.get("ret_5d", 0.0) or 0.0), 4),
+        "volatility_20d": round(float(feature_row.get("volatility_20d", 0.0) or 0.0), 4),
+        "future_ret_1d": round(float(feature_row.get("future_ret_1d", 0.0) or 0.0), 4),
+        "future_ret_5d": round(float(feature_row.get("future_ret_5d", 0.0) or 0.0), 4),
+        "future_ret_20d": round(float(feature_row.get("future_ret_20d", 0.0) or 0.0), 4),
+    }
+
+
+def _infer_fingpt_event_rows(model_dir: Path, features: pd.DataFrame, news_rows: list[dict]) -> pd.DataFrame:
     extracted_rows: list[dict] = []
     for row in news_rows:
+        row = dict(row)
+        row["market_context"] = _lookup_market_context(features, str(row["ticker"]).upper(), row["published_at"])
         text = f"{row.get('title', '')} {row.get('body', '')}".strip()
         try:
-            payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=256)
+            payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=160)
         except Exception as exc:
             logging.warning(
                 "FinGPT structured extraction failed for %s %s: %s. Falling back to heuristic payload.",
@@ -148,12 +171,14 @@ def build_news_features() -> pd.DataFrame:
 
     base = pd.read_parquet(FEATURES_PATH)[["ticker", "date"]].drop_duplicates().copy()
     base["date"] = pd.to_datetime(base["date"])
+    features = pd.read_parquet(FEATURES_PATH)
+    features["date"] = pd.to_datetime(features["date"])
     news_rows = load_news_jsonl_files()
     if not news_rows:
         raise FileNotFoundError("No raw news JSONL files found. Run src/news_ingest.py first.")
 
     model_dir = _load_fingpt_model_dir()
-    inferred = _infer_fingpt_event_rows(model_dir, news_rows)
+    inferred = _infer_fingpt_event_rows(model_dir, features, news_rows)
     if inferred.empty:
         raise RuntimeError("FinGPT event extraction produced no rows.")
 
