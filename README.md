@@ -241,6 +241,43 @@ Or run:
 bash scripts/run_gpu_training.sh
 ```
 
+## Export Full Hugging Face Model
+
+The default `n1` training output is a LoRA adapter. Uploading `models/production/n1` directly creates an adapter-only Hugging Face repo and will not include `config.json`.
+
+To build a full merged Transformers model with `config.json` on the GPU box:
+
+```bash
+export HF_TOKEN="your_hf_token"
+python3 src/export_n1_full_model.py \
+  --source-dir models/production/n1 \
+  --output-dir exports/hf/n1_full \
+  --repo-id kaushiksiva/yolo-wallstreet-n1-fingpt-full \
+  --private \
+  --upload
+```
+
+This writes a merged full-model export under:
+
+```bash
+exports/hf/n1_full/YOLO-WALLSTREET-n1-fingpt-v...
+```
+
+That exported repo can be loaded with plain Transformers:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("kaushiksiva/yolo-wallstreet-n1-fingpt-full")
+model = AutoModelForCausalLM.from_pretrained("kaushiksiva/yolo-wallstreet-n1-fingpt-full")
+```
+
+Notes:
+
+- this requires gated access to `meta-llama/Meta-Llama-3-8B`
+- the adapter in `models/production/n1` is preserved unchanged
+- the merged export is written under `exports/`, not back into `models/production/n1`
+
 ## Real News Ingestion
 
 Populate [data/raw/news](/Users/kaushiksivakumar/workspace/yolo-wallstreet/data/raw/news) with:
