@@ -86,7 +86,7 @@ def _build_prompt(row: dict) -> str:
         f"Article: {row.get('body', '')}\n"
         f"Source: {row.get('source', '')}\n"
         f"MarketContext: {json.dumps(market_context, sort_keys=True)}\n"
-        "Output: "
+        "Output: {"
     )
 
 
@@ -129,7 +129,7 @@ def _infer_fingpt_event_rows(model_dir: Path, features: pd.DataFrame, news_rows:
         row["market_context"] = _lookup_market_context(features, str(row["ticker"]).upper(), row["published_at"])
         text = f"{row.get('title', '')} {row.get('body', '')}".strip()
         try:
-            payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=160)
+            payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=160, json_prefix="{")
         except Exception as exc:
             logging.warning(
                 "FinGPT structured extraction failed for %s %s: %s. Falling back to heuristic payload.",

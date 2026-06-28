@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import build_news_features as module
+from src.structured_llm import extract_first_json_block
 
 
 def test_fallback_payload_returns_reasonable_structure() -> None:
@@ -65,4 +66,14 @@ def test_build_prompt_matches_training_shape() -> None:
 
     assert prompt.startswith("Instruction: Extract stock-relevant trading features as valid JSON.\nInput: ")
     assert "MarketContext: {\"ret_1d\": 0.01}" in prompt
-    assert prompt.endswith("\nOutput: ")
+    assert prompt.endswith("\nOutput: {")
+
+
+def test_extract_first_json_block_accepts_missing_open_brace_with_prefix() -> None:
+    payload = extract_first_json_block(
+        '"sentiment": "positive", "sentiment_score": 0.5, "confidence": 0.7}',
+        prefix="{",
+    )
+
+    assert payload["sentiment"] == "positive"
+    assert payload["sentiment_score"] == 0.5
