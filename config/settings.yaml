@@ -1,0 +1,21 @@
+project:
+  name: YOLO-WALLSTREET
+  default_horizon: 5d
+  timezone: America/Los_Angeles
+
+data:
+  price_period: 3y
+  price_interval: 1d
+  auto_adjust: true
+  actions: false
+
+training:
+  target: future_ret_5d
+  train_end: 2025-06-30
+  validation_start: 2025-07-01
+  validation_end: 2025-12-31
+  test_start: 2026-01-01
+
+backtest:
+  slippage_round_trip: 0.001
+  top_k: 5

@@ -1,0 +1,7 @@
+{
+  "gpu_training_required": false,
+  "mac_inference_supported": true,
+  "model_name": "YOLO-WALLSTREET-n1",
+  "model_version": "n1_stub_v1",
+  "type": "stub_news_feature_extractor"
+}
