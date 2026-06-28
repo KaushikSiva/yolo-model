@@ -23,7 +23,7 @@ def _resolve_output_dir(destination: str) -> Path:
 
 
 def train_n1_fingpt(
-    base_model: str = "FinGPT/fingpt-forecaster",
+    base_model: str = "google/gemma-3-4b-it",
     destination: str = "candidate",
     min_train_rows: int = 10,
 ) -> dict | None:
@@ -116,7 +116,7 @@ def train_n1_fingpt(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-model", default="FinGPT/fingpt-forecaster")
+    parser.add_argument("--base-model", default="google/gemma-3-4b-it")
     parser.add_argument("--destination", choices=["candidate", "production"], default="candidate")
     parser.add_argument("--min-train-rows", type=int, default=10)
     args = parser.parse_args()
