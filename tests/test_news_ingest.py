@@ -46,6 +46,20 @@ def test_brightdata_request_api_search_payload_and_normalization(monkeypatch) ->
     assert "tbm=nws" in captured[0][1]["url"]
 
 
+def test_extract_search_items_handles_brightdata_request_envelope_with_json_body() -> None:
+    payload = {
+        "status_code": 200,
+        "headers": {},
+        "body": '{"news":[{"title":"NVIDIA extends AI rally after earnings beat","url":"https://example.com/story","source":"Reuters","date":"2 hours ago"}]}',
+    }
+
+    items = news_ingest._extract_search_items(payload)
+
+    assert len(items) == 1
+    assert items[0]["title"] == "NVIDIA extends AI rally after earnings beat"
+    assert items[0]["url"] == "https://example.com/story"
+
+
 def test_brightdata_request_api_article_fetch_uses_zone_and_extracts_html(monkeypatch) -> None:
     captured: list[tuple[str, dict]] = []
 

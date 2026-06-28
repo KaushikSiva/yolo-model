@@ -259,7 +259,13 @@ def _coerce_published_at(value: str | None, min_published_at: datetime) -> str |
     return parsed.replace(microsecond=0).isoformat()
 
 
-def _extract_search_items(payload: dict | list) -> list[dict]:
+def _extract_search_items(payload: dict | list | str) -> list[dict]:
+    if isinstance(payload, str):
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+        return _extract_search_items(decoded)
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
@@ -269,7 +275,7 @@ def _extract_search_items(payload: dict | list) -> list[dict]:
                 return [item for item in value if isinstance(item, dict)]
         for key in ("result", "parsed", "response", "body"):
             value = payload.get(key)
-            if isinstance(value, dict):
+            if isinstance(value, (dict, str)):
                 nested_items = _extract_search_items(value)
                 if nested_items:
                     return nested_items
