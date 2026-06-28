@@ -13,6 +13,7 @@ from pathlib import Path
 from src.build_adjuster_training_data import build_adjuster_training_data
 from src.config import ADJUSTER_GEMMA_TRAIN_PATH, ADJUSTER_PRODUCTION_DIR, CANDIDATES_DIR, ensure_project_dirs
 from src.device import is_training_gpu_available
+from src.trl_compat import build_sft_trainer
 from src.utils import save_json, setup_logging, utc_now_iso
 
 
@@ -86,11 +87,11 @@ def train_adjuster_gemma(
         fp16=True,
         report_to=[],
     )
-    trainer = SFTTrainer(
+    trainer = build_sft_trainer(
+        SFTTrainer,
         model=model,
         train_dataset=dataset,
         args=training_args,
-        dataset_text_field="text",
         tokenizer=tokenizer,
         max_seq_length=1024,
     )

@@ -13,6 +13,7 @@ from pathlib import Path
 from src.build_planner_training_data import build_planner_training_data
 from src.config import CANDIDATES_DIR, PLANNER_GEMMA_TRAIN_PATH, PLANNER_PRODUCTION_DIR, ensure_project_dirs
 from src.device import is_training_gpu_available
+from src.trl_compat import build_sft_trainer
 from src.utils import save_json, setup_logging, utc_now_iso
 
 
@@ -86,11 +87,11 @@ def train_planner_gemma(
         fp16=True,
         report_to=[],
     )
-    trainer = SFTTrainer(
+    trainer = build_sft_trainer(
+        SFTTrainer,
         model=model,
         train_dataset=dataset,
         args=training_args,
-        dataset_text_field="text",
         tokenizer=tokenizer,
         max_seq_length=768,
     )
