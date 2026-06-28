@@ -225,7 +225,7 @@ python3 src/build_features.py
 python3 src/news_ingest.py --days-back 30
 python3 src/train_t1_chronos.py --base-model amazon/chronos-2
 python3 src/build_fingpt_training_data.py
-python3 src/train_n1_fingpt.py --destination production --base-model google/gemma-3-4b-it
+python3 src/train_n1_fingpt.py --destination production --base-model FinGPT/fingpt-forecaster
 python3 src/build_news_features.py
 python3 src/train_t1_gpu.py --destination production
 python3 src/train_ensemble.py --destination production
