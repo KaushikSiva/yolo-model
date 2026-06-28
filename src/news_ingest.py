@@ -383,17 +383,31 @@ def _dedupe_key(row: dict) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _resolve_tickers(
+    tickers: Iterable[str] | None = None,
+    resume_from_ticker: str | None = None,
+) -> list[str]:
+    resolved = [str(ticker).upper() for ticker in (tickers or get_non_benchmark_tickers())]
+    if resume_from_ticker:
+        target = resume_from_ticker.upper()
+        if target not in resolved:
+            raise ValueError(f"resume_from_ticker={target} was not found in the requested ticker list.")
+        resolved = resolved[resolved.index(target) :]
+    return resolved
+
+
 def ingest_news(
     tickers: Iterable[str] | None = None,
     days_back: int = 7,
     max_items_per_ticker: int = 8,
     output_path: Path | None = None,
     mode: str = "direct",
+    resume_from_ticker: str | None = None,
 ) -> dict:
     ensure_project_dirs()
     if mode not in SUPPORTED_INGEST_MODES:
         raise ValueError(f"Unsupported mode: {mode}. Expected one of {sorted(SUPPORTED_INGEST_MODES)}")
-    tickers = list(tickers or get_non_benchmark_tickers())
+    tickers = _resolve_tickers(tickers=tickers, resume_from_ticker=resume_from_ticker)
     min_published_at = datetime.now(timezone.utc) - timedelta(days=days_back)
     output_path = output_path or RAW_NEWS_DIR / f"news_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
 
@@ -462,6 +476,7 @@ def ingest_news(
         "mode": mode,
         "used_proxy": mode == "brightdata_proxy" and bool(_proxy_url()),
         "used_brightdata_api": mode == "brightdata_api",
+        "resume_from_ticker": resume_from_ticker.upper() if resume_from_ticker else None,
     }
     logging.info(
         "Finished news ingestion: tickers=%s rows_written=%s failures=%s output_path=%s",
@@ -479,6 +494,7 @@ def main() -> None:
     parser.add_argument("--days-back", type=int, default=7)
     parser.add_argument("--max-items-per-ticker", type=int, default=8)
     parser.add_argument("--mode", choices=sorted(SUPPORTED_INGEST_MODES), default="direct")
+    parser.add_argument("--resume-from-ticker", help="Resume from this ticker within the resolved ticker list.")
     args = parser.parse_args()
     setup_logging()
     tickers = [ticker.strip().upper() for ticker in args.tickers.split(",")] if args.tickers else None
@@ -487,6 +503,7 @@ def main() -> None:
         days_back=args.days_back,
         max_items_per_ticker=args.max_items_per_ticker,
         mode=args.mode,
+        resume_from_ticker=args.resume_from_ticker,
     )
     print(json.dumps(summary, indent=2))
 

@@ -100,3 +100,17 @@ def test_ingest_news_persists_successful_tickers_before_later_failures(tmp_path,
     assert summary["rows_written"] == 1
     assert summary["output_path"] == str(output_path)
     assert summary["failures"] == [{"ticker": "MSFT", "error": "simulated failure"}]
+
+
+def test_resolve_tickers_resumes_from_requested_ticker() -> None:
+    tickers = news_ingest._resolve_tickers(["AAPL", "MSFT", "NVDA"], resume_from_ticker="MSFT")
+    assert tickers == ["MSFT", "NVDA"]
+
+
+def test_resolve_tickers_raises_for_unknown_resume_ticker() -> None:
+    try:
+        news_ingest._resolve_tickers(["AAPL", "MSFT"], resume_from_ticker="NVDA")
+    except ValueError as exc:
+        assert "resume_from_ticker=NVDA" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unknown resume ticker")
