@@ -9,29 +9,40 @@ if __package__ in {None, ""}:
 import argparse
 import json
 
-import joblib
 import numpy as np
 import pandas as pd
 
-from src.config import DEFAULT_HORIZON, ENSEMBLE_PRODUCTION_DIR, FEATURES_PATH, NEWS_FEATURES_PATH, T1_FEATURE_COLUMNS, T1_PRODUCTION_DIR
+from src.config import CHRONOS_FEATURE_COLUMNS, DEFAULT_HORIZON, ENSEMBLE_PRODUCTION_DIR, T1_FEATURE_COLUMNS
+from src.feature_store import load_chronos_features, load_price_features
 from src.log_prediction import log_prediction
+from src.modeling import load_model_bundle
+from src.planner import plan_retrieval
 from src.predict_n1 import predict_n1
 from src.predict_t1 import predict_t1
 from src.utils import business_day_offset, clamp, confidence_label, summarize_feature_drivers
 
 
 def _load_feature_row(ticker: str) -> pd.Series:
-    df = pd.read_parquet(FEATURES_PATH)
-    df["date"] = pd.to_datetime(df["date"])
+    df = load_price_features()
     rows = df.loc[df["ticker"] == ticker].dropna(subset=["close"]).sort_values("date")
     if rows.empty:
         raise ValueError(f"No features found for ticker {ticker}")
     return rows.iloc[-1]
 
 
-def _load_news_row(ticker: str, as_of_date: str) -> dict:
-    payload = predict_n1(ticker, as_of_date)
-    return payload["news_features"]
+def _load_news_payload(ticker: str, as_of_date: str) -> dict:
+    return predict_n1(ticker, as_of_date)
+
+
+def _load_chronos_row(ticker: str, as_of_date: str) -> dict[str, float]:
+    chronos = load_chronos_features()
+    if chronos.empty:
+        return {column: 0.0 for column in CHRONOS_FEATURE_COLUMNS}
+    rows = chronos.loc[(chronos["ticker"] == ticker) & (chronos["date"] <= pd.Timestamp(as_of_date))].sort_values("date")
+    if rows.empty:
+        return {column: 0.0 for column in CHRONOS_FEATURE_COLUMNS}
+    row = rows.iloc[-1]
+    return {column: float(row.get(column, 0.0) or 0.0) for column in CHRONOS_FEATURE_COLUMNS}
 
 
 def _compute_confidence(predicted_return: float, volatility_20d: float, missing_news: bool, t1_pred: float, ensemble_pred: float) -> tuple[str, float]:
@@ -56,27 +67,21 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
     row = _load_feature_row(ticker)
     current_close = float(row["close"])
     as_of_date = row["date"].date().isoformat()
-    news_features = _load_news_row(ticker, as_of_date)
-    missing_news = sum(news_features.values()) == 0.0
+    news_payload = _load_news_payload(ticker, as_of_date)
+    news_features = news_payload["news_features"]
+    chronos_features = _load_chronos_row(ticker, as_of_date)
+    missing_news = False
 
-    ensemble_available = (ENSEMBLE_PRODUCTION_DIR / "model.joblib").exists() and (ENSEMBLE_PRODUCTION_DIR / "metadata.json").exists()
-    if ensemble_available:
-        ensemble_metadata = json.loads((ENSEMBLE_PRODUCTION_DIR / "metadata.json").read_text(encoding="utf-8"))
-        ensemble_model = joblib.load(ENSEMBLE_PRODUCTION_DIR / "model.joblib")
-        feature_columns = ensemble_metadata["feature_columns"]
-        feature_values = {column: float(row.get(column, 0.0) or 0.0) for column in T1_FEATURE_COLUMNS}
-        feature_values.update(news_features)
-        feature_frame = pd.DataFrame([feature_values])
-        predicted_return = float(ensemble_model.predict(feature_frame[feature_columns])[0])
-        ensemble_version = ensemble_metadata["model_version"]
-        importances = getattr(ensemble_model, "feature_importances_", None)
-        driver_row = pd.Series(feature_values)
-    else:
-        predicted_return = float(t1_payload["t1_predicted_return"])
-        ensemble_version = None
-        feature_columns = T1_FEATURE_COLUMNS
-        importances = None
-        driver_row = row
+    ensemble_model, ensemble_metadata = load_model_bundle(ENSEMBLE_PRODUCTION_DIR)
+    feature_columns = ensemble_metadata["feature_columns"]
+    feature_values = {column: float(row.get(column, 0.0) or 0.0) for column in T1_FEATURE_COLUMNS}
+    feature_values.update(chronos_features)
+    feature_values.update(news_features)
+    feature_frame = pd.DataFrame([feature_values])
+    predicted_return = float(ensemble_model.predict(feature_frame[feature_columns])[0])
+    ensemble_version = ensemble_metadata["model_version"]
+    importances = getattr(ensemble_model, "feature_importances_", None)
+    driver_row = pd.Series(feature_values)
 
     target_date = business_day_offset(as_of_date, horizon)
     expected_close = current_close * (1.0 + predicted_return)
@@ -91,6 +96,17 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         t1_pred=float(t1_payload["t1_predicted_return"]),
         ensemble_pred=predicted_return,
     )
+    planner = plan_retrieval(
+        ticker=ticker,
+        feature_row=row,
+        news_features=news_features,
+        t1_payload=t1_payload,
+        horizon=horizon,
+        current_close=current_close,
+    )
+    if planner["should_retrieve"]:
+        confidence_score = round(clamp(confidence_score - 0.05, 0.2, 0.95), 4)
+        confidence = confidence_label(confidence_score)
 
     risk_flags = []
     if missing_news:
@@ -101,6 +117,8 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         risk_flags.append("recent_rapid_move")
     if abs(predicted_return) > 0.08:
         risk_flags.append("large_predicted_move")
+    if planner["should_retrieve"]:
+        risk_flags.append("planner_requests_live_retrieval")
 
     result = {
         "ticker": ticker,
@@ -116,15 +134,21 @@ def predict_for_ticker(ticker: str, horizon: str = DEFAULT_HORIZON, should_log: 
         "confidence_score": confidence_score,
         "model_versions": {
             "t1": t1_payload["t1_model_version"],
-            "n1": predict_n1(ticker, as_of_date)["n1_model_version"],
+            "n1": news_payload["n1_model_version"],
             "ensemble": ensemble_version,
+            "planner": planner["planner_model_version"],
         },
         "main_drivers": summarize_feature_drivers(driver_row, feature_columns, importances=importances, limit=5),
         "risk_flags": risk_flags,
+        "planner": planner,
+        "sources_used": planner["suggested_sources"],
     }
 
     if should_log:
-        prediction_id = log_prediction(result, features_snapshot={"t1": t1_payload, "n1": news_features})
+        prediction_id = log_prediction(
+            result,
+            features_snapshot={"t1": t1_payload, "chronos": chronos_features, "n1": news_features, "planner": planner},
+        )
         result["prediction_id"] = prediction_id
 
     return result

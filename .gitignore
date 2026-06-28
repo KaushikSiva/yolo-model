@@ -12,9 +12,11 @@ data/processed/*.parquet
 data/predictions/*.jsonl
 data/*.db
 models/production/*/model.joblib
+models/production/*/model.json
 models/production/*/model.pt
 models/production/*/scaler.joblib
 models/candidates/**/model.joblib
+models/candidates/**/model.json
 models/candidates/**/model.pt
 models/candidates/**/scaler.joblib
 models/archived/**

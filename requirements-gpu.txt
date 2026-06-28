@@ -1,4 +1,6 @@
 torch>=2.3
+xgboost>=2.1
+chronos-forecasting>=1.5
 transformers>=4.43
 datasets>=2.20
 peft>=0.11

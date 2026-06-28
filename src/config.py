@@ -29,12 +29,18 @@ OHLCV_PATH = RAW_PRICES_DIR / "ohlcv_3y.parquet"
 FAILED_TICKERS_PATH = RAW_PRICES_DIR / "failed_tickers.json"
 FEATURES_PATH = PROCESSED_DIR / "features.parquet"
 NEWS_FEATURES_PATH = PROCESSED_DIR / "news_features.parquet"
+CHRONOS_FEATURES_PATH = PROCESSED_DIR / "chronos_features.parquet"
+FINGPT_EVENT_FEATURES_PATH = PROCESSED_DIR / "fingpt_event_features.parquet"
 EXAMPLE_NEWS_PATH = RAW_NEWS_DIR / "example_news.jsonl"
 N1_GEMMA_TRAIN_PATH = PROCESSED_DIR / "n1_gemma_train.jsonl"
+N1_FINGPT_TRAIN_PATH = PROCESSED_DIR / "n1_fingpt_train.jsonl"
+PLANNER_GEMMA_TRAIN_PATH = PROCESSED_DIR / "planner_gemma_train.jsonl"
 
 T1_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "t1"
+T1_CHRONOS_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "t1_chronos"
 N1_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "n1"
 ENSEMBLE_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "ensemble"
+PLANNER_PRODUCTION_DIR = PRODUCTION_MODELS_DIR / "planner"
 
 BENCHMARK_TICKERS = {"QQQ", "SPY", "XLK", "SMH", "ARKK"}
 DEFAULT_HORIZON = "5d"
@@ -80,6 +86,21 @@ NEWS_FEATURE_COLUMNS = [
     "lawsuit_count",
     "analyst_count",
     "regulatory_count",
+    "company_specific_score",
+    "macro_relevance_score",
+    "novelty_score",
+    "materiality_score",
+    "event_confidence_score",
+    "risk_flag_count",
+]
+
+CHRONOS_FEATURE_COLUMNS = [
+    "chronos_pred_ret_1d",
+    "chronos_pred_ret_5d",
+    "chronos_pred_ret_20d",
+    "chronos_bear_ret_5d",
+    "chronos_bull_ret_5d",
+    "chronos_confidence_score",
 ]
 
 
@@ -91,12 +112,16 @@ def ensure_project_dirs() -> None:
         PROCESSED_DIR,
         PREDICTIONS_DIR,
         T1_PRODUCTION_DIR,
+        T1_CHRONOS_PRODUCTION_DIR,
         N1_PRODUCTION_DIR,
         ENSEMBLE_PRODUCTION_DIR,
+        PLANNER_PRODUCTION_DIR,
         CANDIDATES_DIR / "t1",
         CANDIDATES_DIR / "t1_gpu",
         CANDIDATES_DIR / "n1",
+        CANDIDATES_DIR / "n1_fingpt",
         CANDIDATES_DIR / "n1_gemma_lora",
+        CANDIDATES_DIR / "planner_gemma",
         CANDIDATES_DIR / "ensemble",
         ARCHIVED_MODELS_DIR,
         REPORTS_DIR,

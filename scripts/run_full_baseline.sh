@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python src/download_prices.py
-python src/build_features.py
-python src/build_news_features.py
-python src/train_t1_lgbm.py
-python src/train_ensemble.py
+echo "Mac/local training has been removed."
+echo "Use scripts/run_gpu_training.sh on an NVIDIA CUDA machine to train t1, n1, and ensemble."
+echo "This script is now inference-only."
 python src/init_db.py
 python src/predict_ensemble.py --ticker AAPL --horizon 5d --log

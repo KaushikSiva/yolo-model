@@ -10,12 +10,12 @@ import argparse
 import json
 from pathlib import Path
 
-import joblib
 import pandas as pd
 
 from src.backtest import run_weekly_backtest
-from src.config import CANDIDATES_DIR, ENSEMBLE_PRODUCTION_DIR, FEATURES_PATH, NEWS_FEATURES_PATH, REPORTS_DIR, T1_PRODUCTION_DIR
-from src.modeling import merged_feature_columns, prepare_model_frame, regression_metrics, split_timeframe
+from src.config import CANDIDATES_DIR, REPORTS_DIR, T1_PRODUCTION_DIR, ENSEMBLE_PRODUCTION_DIR
+from src.feature_store import load_training_frame
+from src.modeling import load_metadata, load_model_bundle, merged_feature_columns, prepare_model_frame, regression_metrics, split_timeframe
 from src.utils import save_json, setup_logging
 
 
@@ -29,16 +29,16 @@ def _latest_candidate_dir(model_type: str) -> Path:
 def evaluate_candidate_model(model_type: str) -> dict:
     candidate_dir = _latest_candidate_dir(model_type)
     production_dir = T1_PRODUCTION_DIR if model_type == "t1" else ENSEMBLE_PRODUCTION_DIR
-    candidate_metadata = json.loads((candidate_dir / "metadata.json").read_text(encoding="utf-8"))
-    production_metadata = json.loads((production_dir / "metadata.json").read_text(encoding="utf-8"))
-    candidate_model = joblib.load(candidate_dir / "model.joblib")
-    production_model = joblib.load(production_dir / "model.joblib")
+    candidate_metadata = load_metadata(candidate_dir)
+    production_metadata = load_metadata(production_dir)
+    candidate_model, _ = load_model_bundle(candidate_dir)
+    production_model, _ = load_model_bundle(production_dir)
 
     if model_type == "ensemble":
-        df = pd.read_parquet(FEATURES_PATH).merge(pd.read_parquet(NEWS_FEATURES_PATH), on=["ticker", "date"], how="left")
+        df = load_training_frame(include_news=True, include_chronos=True)
         feature_columns = merged_feature_columns()
     else:
-        df = pd.read_parquet(FEATURES_PATH)
+        df = load_training_frame(include_news=False, include_chronos=False)
         feature_columns = production_metadata["feature_columns"]
 
     frame = prepare_model_frame(df, feature_columns, target_column="future_ret_5d")

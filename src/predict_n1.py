@@ -12,26 +12,29 @@ import json
 import pandas as pd
 
 from src.config import NEWS_FEATURES_PATH, NEWS_FEATURE_COLUMNS, N1_PRODUCTION_DIR
+from src.utils import load_json
 
 
 def predict_n1(ticker: str, as_of_date: str | None = None) -> dict:
-    metadata = json.loads((N1_PRODUCTION_DIR / "metadata.json").read_text(encoding="utf-8"))
-    if NEWS_FEATURES_PATH.exists():
-        df = pd.read_parquet(NEWS_FEATURES_PATH)
-        df["date"] = pd.to_datetime(df["date"])
-        ticker_rows = df.loc[df["ticker"] == ticker].sort_values("date")
-        if as_of_date:
-            ticker_rows = ticker_rows.loc[ticker_rows["date"] <= pd.Timestamp(as_of_date)]
-        if not ticker_rows.empty:
-            row = ticker_rows.iloc[-1]
-            features = {column: float(row.get(column, 0.0) or 0.0) for column in NEWS_FEATURE_COLUMNS}
-            as_of = row["date"].date().isoformat()
-        else:
-            features = {column: 0.0 for column in NEWS_FEATURE_COLUMNS}
-            as_of = as_of_date
+    metadata_path = N1_PRODUCTION_DIR / "metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing n1 metadata: {metadata_path}")
+    metadata = load_json(metadata_path)
+    if not NEWS_FEATURES_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing built news features: {NEWS_FEATURES_PATH}. Run build_news_features.py after FinGPT extraction."
+        )
+    df = pd.read_parquet(NEWS_FEATURES_PATH)
+    df["date"] = pd.to_datetime(df["date"])
+    ticker_rows = df.loc[df["ticker"] == ticker].sort_values("date")
+    if as_of_date:
+        ticker_rows = ticker_rows.loc[ticker_rows["date"] <= pd.Timestamp(as_of_date)]
+    if not ticker_rows.empty:
+        row = ticker_rows.iloc[-1]
+        features = {column: float(row.get(column, 0.0) or 0.0) for column in NEWS_FEATURE_COLUMNS}
+        as_of = row["date"].date().isoformat()
     else:
-        features = {column: 0.0 for column in NEWS_FEATURE_COLUMNS}
-        as_of = as_of_date
+        raise ValueError(f"No FinGPT news features available for ticker {ticker} as of {as_of_date}")
 
     return {
         "ticker": ticker,

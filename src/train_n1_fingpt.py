@@ -8,23 +8,31 @@ if __package__ in {None, ""}:
 
 import argparse
 from datetime import datetime
+from pathlib import Path
 
-from src.config import CANDIDATES_DIR, N1_GEMMA_TRAIN_PATH, ensure_project_dirs
+from src.build_fingpt_training_data import build_fingpt_training_data
+from src.config import CANDIDATES_DIR, N1_FINGPT_TRAIN_PATH, N1_PRODUCTION_DIR, ensure_project_dirs
 from src.device import is_training_gpu_available
-from src.n1_training_data import build_weak_supervision_dataset
 from src.utils import save_json, setup_logging, utc_now_iso
 
 
-def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows: int = 10) -> dict | None:
+def _resolve_output_dir(destination: str) -> Path:
+    if destination == "production":
+        return N1_PRODUCTION_DIR
+    return CANDIDATES_DIR / "n1_fingpt" / datetime.utcnow().strftime("%Y%m%d%H%M%S")
+
+
+def train_n1_fingpt(
+    base_model: str = "FinGPT/fingpt-forecaster",
+    destination: str = "candidate",
+    min_train_rows: int = 10,
+) -> dict | None:
     ensure_project_dirs()
-    if not N1_GEMMA_TRAIN_PATH.exists():
-        built_path = build_weak_supervision_dataset(N1_GEMMA_TRAIN_PATH)
-        if built_path is None:
-            print(f"Missing training data: {N1_GEMMA_TRAIN_PATH}")
-            return None
+    if not N1_FINGPT_TRAIN_PATH.exists():
+        build_fingpt_training_data()
 
     if not is_training_gpu_available():
-        print("Gemma LoRA training requires an NVIDIA GPU with CUDA.")
+        print("FinGPT training requires an NVIDIA GPU with CUDA.")
         return None
 
     try:
@@ -37,19 +45,16 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
         print("GPU dependencies are missing. Install requirements-gpu.txt first.")
         return None
 
-    dataset = load_dataset("json", data_files=str(N1_GEMMA_TRAIN_PATH), split="train")
+    dataset = load_dataset("json", data_files=str(N1_FINGPT_TRAIN_PATH), split="train")
     if len(dataset) < min_train_rows:
-        print(f"Training data too small ({len(dataset)} rows). Add more news examples before LoRA training.")
+        print(f"Training data too small ({len(dataset)} rows). Add more event examples before FinGPT LoRA training.")
         return None
+
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     tokenizer.pad_token = tokenizer.eos_token
 
     def format_row(row: dict) -> str:
-        return (
-            f"Instruction: {row['instruction']}\n"
-            f"Input: {row['input']}\n"
-            f"Output: {row['output']}"
-        )
+        return f"Instruction: {row['instruction']}\nInput: {row['input']}\nOutput: {row['output']}"
 
     dataset = dataset.map(lambda row: {"text": format_row(row)})
     quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
@@ -68,7 +73,7 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
     )
     model = get_peft_model(model, lora_config)
 
-    output_dir = CANDIDATES_DIR / "n1_gemma_lora" / datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    output_dir = _resolve_output_dir(destination)
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=2,
@@ -95,14 +100,15 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
 
     metadata = {
         "model_name": "YOLO-WALLSTREET-n1",
-        "model_version": f"YOLO-WALLSTREET-n1-gemma-lora-v{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+        "model_version": f"YOLO-WALLSTREET-n1-fingpt-v{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         "trained_at": utc_now_iso(),
         "base_model": base_model,
-        "adapter_type": "LoRA",
+        "artifact_path": str(output_dir),
+        "training_recipe": "FinGPT_style_LoRA",
         "training_rows": int(len(dataset)),
         "training_accelerator": "nvidia_cuda",
         "mac_inference_supported": False,
-        "export_hint": "Use llama.cpp/MLX/GGUF or hosted inference for Mac.",
+        "export_hint": "Use precomputed structured features or export a quantized model for Mac inference.",
     }
     save_json(output_dir / "metadata.json", metadata)
     return metadata
@@ -110,11 +116,14 @@ def train_n1_gemma_lora(base_model: str = "google/gemma-3-4b-it", min_train_rows
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-model", default="google/gemma-3-4b-it")
+    parser.add_argument("--base-model", default="FinGPT/fingpt-forecaster")
+    parser.add_argument("--destination", choices=["candidate", "production"], default="candidate")
     parser.add_argument("--min-train-rows", type=int, default=10)
     args = parser.parse_args()
     setup_logging()
-    train_n1_gemma_lora(base_model=args.base_model, min_train_rows=args.min_train_rows)
+    metadata = train_n1_fingpt(args.base_model, args.destination, args.min_train_rows)
+    if metadata:
+        print(metadata["model_version"])
 
 
 if __name__ == "__main__":

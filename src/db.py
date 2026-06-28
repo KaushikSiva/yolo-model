@@ -27,7 +27,9 @@ predictions_table = Table(
     Column("t1_model_version", String),
     Column("n1_model_version", String),
     Column("ensemble_model_version", String),
+    Column("planner_model_version", String),
     Column("features_json", Text),
+    Column("planner_json", Text),
     Column("actual_close", Float),
     Column("actual_return", Float),
     Column("absolute_error", Float),
@@ -69,3 +71,19 @@ def get_engine(db_path: str | None = None) -> Engine:
 def create_tables(engine: Engine | None = None) -> None:
     engine = engine or get_engine()
     metadata.create_all(engine)
+    _ensure_sqlite_columns(engine)
+
+
+def _ensure_sqlite_columns(engine: Engine) -> None:
+    expected_columns = {
+        "planner_model_version": "TEXT",
+        "planner_json": "TEXT",
+    }
+    with engine.begin() as connection:
+        existing = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(predictions)").fetchall()
+        }
+        for column_name, column_type in expected_columns.items():
+            if column_name not in existing:
+                connection.exec_driver_sql(f"ALTER TABLE predictions ADD COLUMN {column_name} {column_type}")

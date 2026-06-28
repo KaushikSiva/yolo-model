@@ -7,118 +7,125 @@ if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import argparse
-import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
-import joblib
-import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 
-from src.config import CANDIDATES_DIR, FEATURES_PATH, T1_FEATURE_COLUMNS, ensure_project_dirs
-from src.device import get_device, is_training_gpu_available
-from src.modeling import prepare_model_frame, regression_metrics, split_timeframe, version_stamp
-from src.utils import save_json, setup_logging, utc_now_iso
+from src.config import CANDIDATES_DIR, FEATURES_PATH, T1_FEATURE_COLUMNS, T1_PRODUCTION_DIR, ensure_project_dirs
+from src.device import is_training_gpu_available
+from src.modeling import (
+    build_recency_weights,
+    prepare_model_frame,
+    regression_metrics,
+    save_model_bundle,
+    split_timeframe,
+    version_stamp,
+)
+from src.utils import setup_logging, utc_now_iso
 
 
-def _parse_bool(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "y"}
-
-
-def train_t1_gpu(allow_cpu: bool = False) -> dict | None:
+def build_xgb_regressor():
     try:
-        import torch
-        from torch import nn
-        from torch.utils.data import DataLoader, TensorDataset
-    except ImportError:
-        print("PyTorch is not installed. Install requirements-gpu.txt to use train_t1_gpu.py.")
-        return None
+        import xgboost as xgb
+    except ImportError as exc:
+        raise RuntimeError("xgboost is not installed. Install requirements-gpu.txt first.") from exc
 
+    return xgb.XGBRegressor(
+        n_estimators=2400,
+        learning_rate=0.02,
+        max_depth=6,
+        min_child_weight=10,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.05,
+        reg_lambda=2.0,
+        objective="reg:squarederror",
+        eval_metric="rmse",
+        tree_method="hist",
+        device="cuda",
+        max_bin=256,
+        random_state=42,
+        early_stopping_rounds=150,
+    )
+
+
+def train_t1_gpu(output_dir: Path | None = None) -> dict:
     ensure_project_dirs()
     if not FEATURES_PATH.exists():
         raise FileNotFoundError(f"Missing features file: {FEATURES_PATH}")
+    if not is_training_gpu_available():
+        raise RuntimeError("YOLO-WALLSTREET-t1 GPU training requires NVIDIA CUDA.")
 
-    if not is_training_gpu_available() and not allow_cpu:
-        print("CUDA is unavailable. Re-run with --allow-cpu true to train on cpu/mps for testing only.")
-        return None
-
-    device = get_device()
     df = pd.read_parquet(FEATURES_PATH)
     frame = prepare_model_frame(df, T1_FEATURE_COLUMNS, target_column="future_ret_5d")
-    train_df, validation_df, _ = split_timeframe(frame)
+    train_df, validation_df, test_df = split_timeframe(frame)
     if train_df.empty or validation_df.empty:
-        raise RuntimeError("Insufficient train/validation data for t1 GPU baseline.")
+        raise RuntimeError("Insufficient train/validation data for t1 GPU training.")
 
-    scaler = StandardScaler()
-    x_train = scaler.fit_transform(train_df[T1_FEATURE_COLUMNS])
-    x_val = scaler.transform(validation_df[T1_FEATURE_COLUMNS])
-    y_train = train_df["future_ret_5d"].to_numpy(dtype=np.float32)
-    y_val = validation_df["future_ret_5d"].to_numpy(dtype=np.float32)
+    output_dir = output_dir or T1_PRODUCTION_DIR
+    model = build_xgb_regressor()
+    train_weights = build_recency_weights(train_df, half_life_days=180)
+    validation_weights = build_recency_weights(validation_df, half_life_days=180)
 
-    train_dataset = TensorDataset(
-        torch.tensor(x_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=torch.float32).unsqueeze(1),
+    model.fit(
+        train_df[T1_FEATURE_COLUMNS],
+        train_df["future_ret_5d"],
+        sample_weight=train_weights,
+        eval_set=[(validation_df[T1_FEATURE_COLUMNS], validation_df["future_ret_5d"])],
+        sample_weight_eval_set=[validation_weights],
+        verbose=100,
     )
-    val_tensor = torch.tensor(x_val, dtype=torch.float32).to(device)
 
-    model = nn.Sequential(
-        nn.Linear(len(T1_FEATURE_COLUMNS), 128),
-        nn.ReLU(),
-        nn.Dropout(0.1),
-        nn.Linear(128, 64),
-        nn.ReLU(),
-        nn.Linear(64, 1),
-    ).to(device)
+    validation_pred = model.predict(validation_df[T1_FEATURE_COLUMNS])
+    validation_metrics = regression_metrics(validation_df["future_ret_5d"], validation_pred)
 
-    loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = nn.MSELoss()
+    test_metrics = {}
+    if not test_df.empty:
+        test_pred = model.predict(test_df[T1_FEATURE_COLUMNS])
+        test_metrics = regression_metrics(test_df["future_ret_5d"], test_pred)
 
-    for _ in range(25):
-        model.train()
-        for batch_x, batch_y in loader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
-            optimizer.zero_grad()
-            loss = loss_fn(model(batch_x), batch_y)
-            loss.backward()
-            optimizer.step()
-
-    model.eval()
-    with torch.no_grad():
-        validation_pred = model(val_tensor).cpu().numpy().reshape(-1)
-
-    metrics = regression_metrics(validation_df["future_ret_5d"], validation_pred)
     model_version = version_stamp("YOLO-WALLSTREET-t1-gpu")
-    output_dir = CANDIDATES_DIR / "t1_gpu" / datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), output_dir / "model.pt")
-    joblib.dump(scaler, output_dir / "scaler.joblib")
-    save_json(output_dir / "feature_columns.json", {"feature_columns": T1_FEATURE_COLUMNS})
-
     metadata = {
         "model_name": "YOLO-WALLSTREET-t1",
         "model_version": model_version,
         "trained_at": utc_now_iso(),
         "target": "future_ret_5d",
         "feature_columns": T1_FEATURE_COLUMNS,
-        "validation_metrics": metrics,
-        "device_used": device,
-        "candidate_only": True,
-        "mac_inference_supported": device != "cuda",
+        "train_start": train_df["date"].min().date().isoformat(),
+        "train_end": train_df["date"].max().date().isoformat(),
+        "validation_metrics": validation_metrics,
+        "test_metrics": test_metrics,
+        "device_used": "cuda",
+        "training_accelerator": "nvidia_cuda",
+        "mac_inference_supported": True,
+        "implementation_backend": "xgboost_cuda",
+        "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
     }
-    save_json(output_dir / "metadata.json", metadata)
-    print(json.dumps(metadata, indent=2))
+    save_model_bundle(model, metadata, output_dir, artifact_type="xgboost_json")
+
+    validation_predictions = validation_df[["date", "ticker", "close", "future_ret_5d"]].copy()
+    validation_predictions["prediction"] = validation_pred
+    validation_predictions.to_csv(output_dir / "validation_predictions.csv", index=False)
+    logging.info("Saved t1 GPU model to %s", output_dir)
     return metadata
+
+
+def resolve_output_dir(destination: str) -> Path:
+    if destination == "production":
+        return T1_PRODUCTION_DIR
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    return CANDIDATES_DIR / "t1" / timestamp
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--allow-cpu", default="false")
+    parser.add_argument("--destination", choices=["production", "candidate"], default="production")
     args = parser.parse_args()
     setup_logging()
-    train_t1_gpu(allow_cpu=_parse_bool(args.allow_cpu))
+    metadata = train_t1_gpu(output_dir=resolve_output_dir(args.destination))
+    print(metadata["model_version"])
 
 
 if __name__ == "__main__":

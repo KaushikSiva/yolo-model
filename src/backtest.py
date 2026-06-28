@@ -8,14 +8,13 @@ if __package__ in {None, ""}:
 
 import argparse
 import json
-from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 
-from src.config import BENCHMARK_TICKERS, ENSEMBLE_PRODUCTION_DIR, FEATURES_PATH, NEWS_FEATURES_PATH, REPORTS_DIR, T1_PRODUCTION_DIR
-from src.modeling import merged_feature_columns
+from src.config import BENCHMARK_TICKERS, ENSEMBLE_PRODUCTION_DIR, REPORTS_DIR, T1_PRODUCTION_DIR
+from src.feature_store import load_training_frame
+from src.modeling import load_metadata, load_model_bundle, merged_feature_columns, model_bundle_exists
 from src.utils import save_json, setup_logging
 
 
@@ -114,19 +113,19 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
 
-    if args.model == "ensemble" and (ENSEMBLE_PRODUCTION_DIR / "model.joblib").exists():
+    if args.model == "ensemble" and model_bundle_exists(ENSEMBLE_PRODUCTION_DIR):
         model_dir = ENSEMBLE_PRODUCTION_DIR
-        features = pd.read_parquet(FEATURES_PATH).merge(pd.read_parquet(NEWS_FEATURES_PATH), on=["ticker", "date"], how="left")
+        features = load_training_frame(include_news=True, include_chronos=True)
         feature_columns = merged_feature_columns()
     else:
         model_dir = T1_PRODUCTION_DIR
-        features = pd.read_parquet(FEATURES_PATH)
+        features = load_training_frame(include_news=False, include_chronos=False)
         from src.config import T1_FEATURE_COLUMNS
 
         feature_columns = T1_FEATURE_COLUMNS
 
-    metadata = json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
-    model = joblib.load(model_dir / "model.joblib")
+    metadata = load_metadata(model_dir)
+    model, _ = load_model_bundle(model_dir)
     _, metrics = run_weekly_backtest(model, feature_columns, features, metadata["model_name"], metadata["model_version"])
     print(json.dumps(metrics, indent=2))
 

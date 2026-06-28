@@ -9,21 +9,27 @@ if __package__ in {None, ""}:
 import argparse
 from datetime import datetime
 
+from src.build_fingpt_training_data import build_fingpt_training_data
 from src.build_features import build_features
 from src.build_news_features import build_news_features
+from src.build_planner_training_data import build_planner_training_data
 from src.config import CANDIDATES_DIR
+from src.train_t1_chronos import train_t1_chronos
 from src.train_ensemble import train_ensemble_model
-from src.train_t1_lgbm import train_t1_model
+from src.train_t1_gpu import train_t1_gpu
 from src.utils import setup_logging
 
 
 def retrain_candidate_model(model_type: str) -> dict:
     build_features()
+    train_t1_chronos()
+    build_fingpt_training_data()
     build_news_features()
+    build_planner_training_data()
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     output_dir = CANDIDATES_DIR / model_type / timestamp
     if model_type == "t1":
-        return train_t1_model(output_dir=output_dir)
+        return train_t1_gpu(output_dir=output_dir)
     if model_type == "ensemble":
         return train_ensemble_model(output_dir=output_dir)
     raise ValueError(f"Unsupported model type: {model_type}")

@@ -2,10 +2,14 @@
 set -euo pipefail
 
 echo "Install GPU extras first: pip install -r requirements-gpu.txt"
-python src/train_t1_gpu.py --allow-cpu false
-
-if [[ -f data/processed/n1_gemma_train.jsonl ]]; then
-  python src/train_n1_gemma_lora.py
-else
-  echo "Skipping Gemma LoRA training because data/processed/n1_gemma_train.jsonl is missing."
-fi
+python src/download_prices.py
+python src/build_features.py
+python src/news_ingest.py --days-back 30
+python src/train_t1_chronos.py
+python src/build_fingpt_training_data.py
+python src/train_t1_gpu.py --destination production
+python src/train_n1_fingpt.py --destination production
+python src/build_news_features.py
+python src/build_planner_training_data.py
+python src/train_planner_gemma.py --destination production
+python src/train_ensemble.py --destination production
