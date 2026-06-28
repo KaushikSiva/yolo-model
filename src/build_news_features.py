@@ -28,6 +28,40 @@ TOPIC_KEYWORDS = {
 }
 
 
+def _fallback_payload(text: str) -> dict:
+    lowered = text.lower()
+    positive_hits = sum(
+        word in lowered
+        for word in {"beat", "strong", "growth", "upbeat", "surge", "record", "expand", "positive", "upgrade"}
+    )
+    negative_hits = sum(
+        word in lowered
+        for word in {"miss", "weak", "cut", "drop", "decline", "lawsuit", "risk", "negative", "downgrade"}
+    )
+    total_hits = positive_hits + negative_hits
+    sentiment_score = 0.0 if total_hits == 0 else float((positive_hits - negative_hits) / total_hits)
+    catalyst_type = "general_news"
+    for feature_name, keywords in TOPIC_KEYWORDS.items():
+        if any(word in lowered for word in keywords):
+            catalyst_type = feature_name.replace("_count", "")
+            break
+    risk_flags = []
+    if any(word in lowered for word in {"lawsuit", "litigation", "investigation", "antitrust", "sec"}):
+        risk_flags.append("legal_or_regulatory")
+    if "guidance" in lowered and any(word in lowered for word in {"cut", "lower", "reduced"}):
+        risk_flags.append("guidance_cut")
+    return {
+        "sentiment": "positive" if sentiment_score > 0.15 else "negative" if sentiment_score < -0.15 else "neutral",
+        "sentiment_score": round(sentiment_score, 4),
+        "catalyst_type": catalyst_type,
+        "company_specific": True,
+        "risk_flags": risk_flags,
+        "novelty": "medium",
+        "likely_horizon": "5_20_trading_days" if any(word in lowered for word in {"earnings", "guidance", "quarter"}) else "1_5_trading_days",
+        "confidence": 0.35,
+    }
+
+
 def _normalize_novelty(value: str) -> float:
     mapping = {"low": 0.2, "medium": 0.55, "high": 0.9}
     return mapping.get(str(value).lower(), 0.4)
@@ -70,8 +104,17 @@ def _load_fingpt_model_dir() -> Path:
 def _infer_fingpt_event_rows(model_dir: Path, news_rows: list[dict]) -> pd.DataFrame:
     extracted_rows: list[dict] = []
     for row in news_rows:
-        payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=256)
         text = f"{row.get('title', '')} {row.get('body', '')}".strip()
+        try:
+            payload = generate_structured_json(model_dir, _build_prompt(row), max_new_tokens=256)
+        except Exception as exc:
+            logging.warning(
+                "FinGPT structured extraction failed for %s %s: %s. Falling back to heuristic payload.",
+                row.get("ticker", ""),
+                row.get("published_at", ""),
+                exc,
+            )
+            payload = _fallback_payload(text)
         topic_counts = _keyword_counts(text)
         sentiment_score = float(payload.get("sentiment_score", 0.0) or 0.0)
         company_specific = 1.0 if bool(payload.get("company_specific", False)) else 0.0
